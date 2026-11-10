@@ -10,7 +10,12 @@ to the placeholder map, which is what made the face black and the cloth muddy, s
 override below is imported as a VT (and the small helper maps are generated at 256px,
 one full VT tile).
 """
+import os
+import time
+
 import unreal
+
+STARTED_AT = time.time()
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
@@ -37,15 +42,34 @@ HOST_HUN_TEX_DIR = "/Game/Test/Zero_LookDev/ZeroFile/Character/Hun/Head/Textures
 #   Cloth_02_b  intensity 0.5 -> half albedo + half fabric noise  <- the (near-white) skin
 #   Cloth_05_b  intensity 1.0 -> the detail layer only (white)    <- the small white highlight bits
 # Only MIs with their own albedo texture can be used, one distinct albedo path per slot.
+#
+# Slot 5 (eyebrow) and slot 4 (face) sample the SAME image (`T_NPC_036_face_d`), and the face texture
+# already carries the brows, so the eyebrow can ride on the face's own instance. That frees the
+# `T_ZeroHun_Head_D` albedo path for the eyes - which is the whole point: the eye slot must not use
+# `MI_ZeroHun_Eye_01`, because its parent is `MA_EyeRefractive_02`, a *refractive eyeball* shader. It
+# samples the albedo through an iris remap plus an iris-height map, so the model's own eye card (two
+# eyes, thick lash ring, baked eyelid shading) comes out small, offset and nearly black - measured in
+# game. `MA_EyeRefractive` is a different shader family from every other slot; the model's own eye
+# material was an ordinary toon albedo material (`MI_NPC_036_eye`: BlendMode Masked, MSM_Toon).
+#
+# So the eye uses the same toon family as the rest of the model (`MAI_Skin`, slot 5's former instance)
+# and `T_ZeroHun_Head_D` carries the untouched original eye card. Nothing samples `T_ZeroHun_Eye_*` any
+# more, so those overrides are gone as well - which is also why other characters' eyes are no longer
+# touched by this mod.
+#
+# Slot 7 is NOT a white trim: the model's `MI_NPC_036_gaoguang` uses the SAME eye card as its base colour
+# (its UVs are a 3% x 3% patch - the specular glint on the eye). Feeding it a white texture painted a
+# white blob over the eye, which read as white eyelashes. Both slots therefore share one instance, which
+# is exactly how the source model is set up.
 SLOTS = [
     "%s/MI_ZeroHun_Cloth_04_b" % HOST_MI_DIR,           # dress      (MAI_Cloth, pure albedo)
     "%s/MI_ZeroHun_Cloth_02_b" % HOST_MI_DIR,           # body       (MAI_Cloth)
     "%s/MI_ZeroHun_Cloth_03_b" % HOST_MI_DIR,           # front hair (MAI_Equipment)
     "%s/MI_ZeroHun_Cloth_01_b" % HOST_MI_DIR,           # back hair  (MAI_Equipment_Mask)
     "%s/MI_ZeroHun_Cap_01_b" % HOST_MI_DIR,             # face       (MAI_Equipment_Mask)
-    "%s/MI_ZeroHun_Head_Injured30" % HOST_HEAD_MI_DIR,  # eyebrow    (MAI_Skin)
-    "%s/MI_ZeroHun_Eye_01" % HOST_V2_MI_DIR,            # eyes       (MA_EyeRefractive)
-    "%s/MI_ZeroHun_Cloth_05_b" % HOST_MI_DIR,           # highlight  (MAI_Cloth)
+    "%s/MI_ZeroHun_Cap_01_b" % HOST_MI_DIR,             # eyebrow    (same image as the face)
+    "%s/MI_ZeroHun_Head_Injured30" % HOST_HEAD_MI_DIR,  # eyes       (MAI_Skin toon, plain albedo)
+    "%s/MI_ZeroHun_Head_Injured30" % HOST_HEAD_MI_DIR,  # eye glint  (same image as the eyes)
 ]
 
 # (folder, texture name, our tga, kind) - kind drives the sampler settings
@@ -56,10 +80,15 @@ TEXTURES = [
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_02_BC", "T_NPC_036_02_d", "albedo"),
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_03_BC", "T_NPC_036_hair_01_d", "albedo"),
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_BC", "T_NPC_036_01_d", "albedo"),
+    # Kept even though no slot points at `MI_ZeroHun_Cloth_05_b` any more: this image is also the
+    # `DetailColor` layer the other cloth instances blend in (`BaseColor Intensity`), so leaving Hun's
+    # version in place would put his fabric detail on Korinsna's cloth.
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_05_BC", "T_Korinsna_White", "albedo"),
     (HOST_TEX_DIR, "T_ZeroHun_Cap_V02_BC", "T_NPC_036_face_d", "albedo"),
-    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_D", "T_NPC_036_face_d", "albedo"),
-    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_D", "T_NPC_036_eyes_d", "albedo"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_D", "T_NPC_036_eyes_d", "albedo"),
+    # The refractive eye textures are deliberately NOT overridden: nothing in this mod samples them any
+    # more (the eye slot moved to a toon instance, see SLOTS), and overwriting them would change the eyes
+    # of every other character that uses `MI_ZeroHun_Eye_01`.
     # neutral shading inputs so nothing tints, dirties or glosses the albedo
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_01_ARM", "T_Korinsna_ARM", "mask"),
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_02_ARM", "T_Korinsna_ARM", "mask"),
@@ -79,6 +108,21 @@ TEXTURES = [
 ]
 
 RESULT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod\extract\ue-buildassets-result.txt"
+
+# Overrides an earlier version of this file created and that must never ship again. The cook stages
+# every asset that is on disk, whether or not this run imports it, so a removed override stays in the
+# pak until the project asset itself is deleted:
+#   * `T_ZeroHun_Eye_*` are the *refractive eyeball* inputs of `MI_ZeroHun_Eye_01`, an instance every
+#     other character's eyes share. Overriding them turned NPC eyes into the model's eye card (the
+#     "other NPCs have Korinsna's eyes" bug) and nothing in this mod samples them any more.
+#   * the two HeadMerged copies were imported into the wrong folder; the real paths are one level up.
+PRUNED = [
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_D"),
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_H"),
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_AO"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_Detail_N"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_V02_SCMT"),
+]
 
 
 def log(msg):
@@ -110,6 +154,15 @@ def configure(tex, kind):
 
 
 open(RESULT, "w").close()
+
+# ---------------------------------------------------------------- prune stale overrides
+# `delete_if_exists` only removes what this run is about to import; a path that dropped out of TEXTURES
+# leaves its project asset behind, and the cook ships it.
+for folder, name in PRUNED:
+    stale = "%s/%s" % (folder, name)
+    if EAL.does_asset_exist(stale):
+        delete_if_exists(stale)
+        log("pruned stale override %s" % stale)
 
 # ---------------------------------------------------------------- texture overrides
 for folder, name, tga, kind in TEXTURES:
@@ -191,4 +244,16 @@ log("assigned slots: %d" % len(check))
 for i, m in enumerate(check):
     mi = m.get_editor_property("material_interface")
     log("  [%d] -> %s" % (i, mi.get_path_name() if mi else "None"))
+
+# The mesh the game renders is NOT this one: `build_carrier_mesh.py` imports the same FBX as
+# `/HuaShira/.../SkinParts/Hun_Head_New` and carries its own copy of the slot list. A slot change here
+# only reaches the game after that copy is rebuilt, and forgetting it is invisible in every log (the
+# cook happily ships the old carrier) - it cost a whole debugging round once: the corrected eye
+# material was in SK_Korinsna, the game kept rendering `MI_ZeroHun_Eye_01`.
+carrier = os.path.join(unreal.Paths.project_dir(), "Plugins", "HuaShira", "Content",
+                       "Characters", "Hero", "Hero_Hun", "SkinParts", "Hun_Head_New.uasset")
+if os.path.exists(carrier) and os.path.getmtime(carrier) < STARTED_AT:
+    log("WARNING carrier %s is older than this run - run build_carrier_mesh.py before cooking, "
+        "otherwise the game keeps the previous slot assignment" % carrier)
+    print("WARNING: rebuild the carrier mesh (build_carrier_mesh.py) before cooking")
 log("done")

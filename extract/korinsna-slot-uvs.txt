@@ -1,0 +1,11 @@
+================================================================================
+object NPC_036_skin_LOD0  vertices=58714  materials=8
+  uv layer: UV0 (4)
+  slot 0  MI_NPC_036_01                polys=27140  u=0.003..0.997  v=0.003..0.994  area=2680.6618
+  slot 1  MI_NPC_036_02                polys=29901  u=0.003..0.998  v=0.003..0.995  area=2386.4607
+  slot 2  MI_NPC_036_hair_01           polys=8185   u=0.005..0.997  v=0.003..0.996  area=511.0506
+  slot 3  MI_NPC_036_hair_02           polys=6674   u=0.008..0.991  v=0.003..0.994  area=1653.6703
+  slot 4  MI_NPC_036_face              polys=5162   u=0.002..0.998  v=0.035..0.988  area=152.7295
+  slot 5  MI_NPC_036_eyebrow           polys=888    u=0.014..0.986  v=0.004..0.254  area=4.5747
+  slot 6  MI_NPC_036_eye               polys=240    u=0.015..0.982  v=0.233..0.767  area=2.7271
+  slot 7  MI_NPC_036_gaoguang          polys=240    u=0.333..0.363  v=0.117..0.147  area=0.1506

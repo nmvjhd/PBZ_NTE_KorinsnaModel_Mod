@@ -18,6 +18,15 @@ return {
     report_weapon_geometry = true,
     report_materials = true,
 
+    -- which material instances and textures the shipped build actually has (the editor only holds
+    -- placeholders), plus every slot's parent material chain - this is what decides the eye fix
+    report_material_catalog = true,
+
+    -- F12 steps slot 6 through every MI_ZeroHun_*Head* instance the game has (wrapping back to the
+    -- shipped assignment): the hero's head slot is normally a plain instance, and the ones the build
+    -- uses are the damage-status variants, which paint the eye card dark
+    material_probe = true,
+
     -- the KawaiiPhysics field layout the game's own engine created for our graph: the plug-in fork the
     -- game ships differs from the version the nodes were authored with, and a dropped property means a
     -- node that simulates nothing
@@ -43,9 +52,4 @@ return {
     -- times each scan and reports a stall (the game thread was busy before our callback ran) separately
     -- from a slow scan, because those two have completely different causes
     profile_scans = true,
-
-    -- which classes actually reach the object listener, and whether owner/mesh are readable at that
-    -- moment. This decides whether the hiding caches can be filled from events instead of the
-    -- level-wide searches (a class the listener never reports cannot be found that way).
-    report_listener_classes = true,
 }
