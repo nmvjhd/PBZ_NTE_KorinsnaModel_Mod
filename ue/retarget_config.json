@@ -79,7 +79,7 @@
     },
     {
       "name": "Head",
-      "retarget": false,
+      "retarget": true,
       "source": [
         "Head",
         "Head"
@@ -125,7 +125,11 @@
         "Bip001-L-UpperArm",
         "Bone-L-UpperArm-Twist1"
       ],
-      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly."
+      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly.",
+      "align_game_reference": true,
+      "alignment_source_end": "lowerarm_l",
+      "alignment_target_end": "Bip001-L-Forearm",
+      "idle_lower_degrees": 4
     },
     {
       "name": "LeftArmLower",
@@ -138,7 +142,11 @@
         "Bip001-L-Forearm",
         "Bone-L-ForeArm-Twist1"
       ],
-      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly."
+      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly.",
+      "align_game_reference": true,
+      "alignment_source_end": "hand_l",
+      "alignment_target_end": "Bip001-L-Hand",
+      "idle_lower_degrees": 4
     },
     {
       "name": "LeftThigh",
@@ -203,7 +211,11 @@
         "Bip001-R-UpperArm",
         "Bone-R-UpperArm-Twist1"
       ],
-      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly."
+      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly.",
+      "align_game_reference": true,
+      "alignment_source_end": "lowerarm_r",
+      "alignment_target_end": "Bip001-R-Forearm",
+      "idle_lower_degrees": 4
     },
     {
       "name": "RightArmLower",
@@ -216,7 +228,11 @@
         "Bip001-R-Forearm",
         "Bone-R-ForeArm-Twist1"
       ],
-      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly."
+      "note": "IK_check item 3: the target has twist bones inside the limb path (arm 7 bones, leg 8) and the retargeter interpolates the joint bend into them, which is what bent the limb into an arch. A chain cannot skip a bone on the path and chains may not overlap, so each limb is split into adjacent segments that end on the last twist bone: every segment then maps to a single-bone source chain and copies that joint's rotation rigidly.",
+      "align_game_reference": true,
+      "alignment_source_end": "hand_r",
+      "alignment_target_end": "Bip001-R-Hand",
+      "idle_lower_degrees": 4
     },
     {
       "name": "RightHand",
@@ -783,5 +799,6 @@
         "m_skirt_5"
       ]
     }
-  ]
+  ],
+  "game_reference_capture": "D:\\Code\\personal\\game-mod\\characters\\yae\\extract\\arm-pose.jsonl"
 }

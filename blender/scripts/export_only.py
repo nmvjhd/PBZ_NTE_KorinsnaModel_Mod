@@ -4,7 +4,7 @@ Run with:  blender.exe -b blender/out/Korinsna_Rigged.blend --python blender/scr
 """
 import bpy
 
-out_fbx = r"J:\VS_Projects\PBZ_KorinsnaSkinMod\blender\out\Korinsna_Body.fbx"
+out_fbx = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\Korinsna_Body.fbx"
 
 # work in centimetres so UE (which treats FBX units as cm) receives the right size
 bpy.context.scene.unit_settings.system = "METRIC"

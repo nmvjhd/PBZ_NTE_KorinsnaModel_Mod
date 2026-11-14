@@ -15,7 +15,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_APose.fbx").replace("\\", "/")
 DEST = "/Game/Korinsna"
 NAME = "SK_Korinsna"
@@ -50,6 +50,8 @@ def main():
     options.set_editor_property("create_physics_asset", False)
     smid = unreal.FbxSkeletalMeshImportData()
     smid.set_editor_property("import_morph_targets", False)
+    # keep the model's authored (MMD) normals: recomputed ones put hard shading seams on the face
+    smid.set_editor_property("normal_import_method", unreal.FBXNormalImportMethod.FBXNIM_IMPORT_NORMALS)
     options.set_editor_property("skeletal_mesh_import_data", smid)
     task.set_editor_property("options", options)
 

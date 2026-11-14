@@ -25,7 +25,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_APose.fbx").replace("\\", "/")
 RESULT = os.path.join(ROOT, "extract", "ue-carrier-result.txt")
 
@@ -80,6 +80,7 @@ def main():
     options.set_editor_property("skeleton", skeleton)
     smid = unreal.FbxSkeletalMeshImportData()
     smid.set_editor_property("import_morph_targets", False)
+    smid.set_editor_property("normal_import_method", unreal.FBXNormalImportMethod.FBXNIM_IMPORT_NORMALS)
     options.set_editor_property("skeletal_mesh_import_data", smid)
     task.set_editor_property("options", options)
 

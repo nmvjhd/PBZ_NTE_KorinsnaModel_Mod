@@ -12,8 +12,8 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-FBX = "J:/VS_Projects/PBZ_KorinsnaSkinMod/blender/out/Korinsna_Body.fbx"
-TEX_DIR = "J:/VS_Projects/PBZ_KorinsnaSkinMod/KorinsnaModel/textures"
+FBX = "D:/Code/personal/game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/blender/out/Korinsna_Body.fbx"
+TEX_DIR = "D:/Code/personal/game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/KorinsnaModel/textures"
 
 SKEL_DIR = "/HuaShira/Characters/Hero/Hero_Hun"
 DEST = SKEL_DIR + "/SkinParts"
@@ -71,7 +71,7 @@ TEXTURES = [
     (HOST_HUN_TEX_DIR, "T_ZeroHun_Head_DirtMask", "T_Korinsna_Black"),
 ]
 
-RESULT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod\extract\ue-buildassets-result.txt"
+RESULT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-buildassets-result.txt"
 
 
 def log(msg):

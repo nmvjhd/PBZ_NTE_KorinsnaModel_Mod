@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $retoc = "J:\retoc\retoc.exe"
-$unrealPak = "K:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealPak.exe"
+$unrealPak = "E:\Game\UE_5.7\Engine\Binaries\Win64\UnrealPak.exe"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stage = Join-Path $env:TEMP ("korinsna_stage_" + [guid]::NewGuid().ToString("N"))

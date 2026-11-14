@@ -17,6 +17,9 @@ class PROJECTPBZ_API UKorinsnaEditorLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
+	// The implementations only exist in editor builds (see the .cpp); declaring them unconditionally
+	// leaves the Game target with unresolved externals, and UAT's staging step needs that target built.
+#if WITH_EDITOR
 	/**
 	 * Creates (or recreates) an animation blueprint whose graph is a
 	 * "Retarget Pose From Mesh" node wired into the output pose, optionally followed by a chain of
@@ -77,4 +80,5 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Korinsna")
 	static FString SyncReferencePose(const FString& MeshPath);
+#endif // WITH_EDITOR
 };

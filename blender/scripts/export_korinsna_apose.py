@@ -21,8 +21,8 @@ import bpy
 
 argv = sys.argv
 argv = argv[argv.index("--") + 1:] if "--" in argv else []
-SRC = argv[0] if len(argv) > 0 else r"J:\VS_Projects\PBZ_KorinsnaSkinMod\KorinsnaModel\npc_036_APOSE.blend"
-OUT = argv[1] if len(argv) > 1 else r"J:\VS_Projects\PBZ_KorinsnaSkinMod\blender\out\Korinsna_APose.fbx"
+SRC = argv[0] if len(argv) > 0 else r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\npc_036_APOSE.blend"
+OUT = argv[1] if len(argv) > 1 else r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\Korinsna_APose.fbx"
 SCALE = float(argv[2]) if len(argv) > 2 else 1.0
 # No extra yaw: the model is authored facing the direction the game expects. An earlier build added
 # +90 degrees here, which showed up in game as a 90 degree counter-clockwise error.

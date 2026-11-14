@@ -25,7 +25,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 BLANK_FBX = os.path.join(ROOT, "blender", "out", "BlankPart.fbx").replace("\\", "/")
 # the body needs its own blank mesh: one built from the game's own bone hierarchy, so its bone list
 # matches the real body exactly (see the note on BLANKED)

@@ -2451,6 +2451,122 @@ local function resolve_material(path)
     return found
 end
 
+-- Own materials: slots whose mesh material is a cooked "holder" instance (/Game/.../Own/MI_Own_NN).
+--
+-- A holder is a child of one of the hero's material instances and carries OUR textures at our own asset
+-- paths, so nothing of the game's is overwritten. It cannot render by itself: the hero's master material
+-- is layered and its texture parameters are LAYER parameters (association 0, layer 0), while a cooked
+-- child only gets global overrides and - cooked against a stand-in parent - loses the layer inheritance
+-- as well (it shows the grey placeholder). What does work, verified in game, is a DYNAMIC instance of the
+-- hero's instance with the textures set through the full parameter info. So per holder slot this builds
+-- that dynamic instance once, and puts it back whenever the game replaces the slot (the damage system
+-- swaps slot 0 of the head part, see guard_materials).
+local OWN_HOLDER_MARK = "/Own/MI_Own_"
+local LAYER_PARAMETER = 0
+
+-- slot index -> holder instance, read from the mesh ASSET (the component's slots may already be swapped)
+local function own_holders(component)
+    local mesh = nil
+    pcall(function() mesh = component:GetSkeletalMeshAsset() end)
+    if not valid(mesh) then return nil end
+    local key = full_name(mesh)
+    if key == nil then return nil end
+    if state.own_holders == nil then state.own_holders = {} end
+    local cached = state.own_holders[key]
+    if cached ~= nil then
+        local alive = true
+        for _, holder in pairs(cached) do
+            if not valid(holder) then alive = false end
+        end
+        if alive then return cached end
+    end
+    local holders = {}
+    local slot = 0
+    pcall(function()
+        mesh.Materials:ForEach(function(_, element)
+            local material = nil
+            pcall(function() material = element:get().MaterialInterface end)
+            local name = valid(material) and full_name(material) or ""
+            if name ~= nil and name:find(OWN_HOLDER_MARK, 1, true) then
+                holders[slot] = material
+            end
+            slot = slot + 1
+        end)
+    end)
+    state.own_holders[key] = holders
+    return holders
+end
+
+local function build_own_instance(component, index, holder)
+    local base = nil
+    pcall(function() base = holder.Parent end)
+    if not valid(base) then return nil, 0 end
+    local instance = nil
+    pcall(function() instance = component:CreateDynamicMaterialInstance(index, base, FName("None")) end)
+    if not valid(instance) then return nil, 0 end
+    local applied = 0
+    pcall(function()
+        holder.TextureParameterValues:ForEach(function(_, element)
+            local entry = element:get()
+            local texture = entry.ParameterValue
+            local name = nil
+            pcall(function() name = entry.ParameterInfo.Name:ToString() end)
+            if name ~= nil and valid(texture) then
+                local ok = pcall(function()
+                    instance:SetTextureParameterValueByInfo(
+                        { Name = FName(name), Association = LAYER_PARAMETER, Index = 0 }, texture)
+                end)
+                if ok then applied = applied + 1 end
+            end
+        end)
+    end)
+    return instance, applied
+end
+
+local function apply_own_materials(component, label)
+    local holders = own_holders(component)
+    if holders == nil or next(holders) == nil then return end
+    local key = full_name(component)
+    if key == nil then return end
+    if state.own_instances == nil then state.own_instances = {} end
+    local instances = state.own_instances[key]
+    if instances == nil then
+        instances = {}
+        state.own_instances[key] = instances
+    end
+    local prefix = label or "own material"
+    for index, holder in pairs(holders) do
+        local have = nil
+        pcall(function() have = component:GetMaterial(index) end)
+        local have_name = valid(have) and full_name(have) or "<none>"
+        local instance = instances[index]
+        if valid(instance) then
+            if full_name(instance) ~= have_name then
+                local ok = pcall(function() component:SetMaterial(index, instance) end)
+                trace(string.format("%s: slot %d was %s -> own instance restored (%s)", prefix, index,
+                    tostring(short_name(have_name)), ok and "ok" or "FAILED"))
+            end
+        else
+            local made, applied = build_own_instance(component, index, holder)
+            if made ~= nil then
+                instances[index] = made
+                trace(string.format("%s: slot %d -> dynamic instance of %s with %d texture(s)", prefix, index,
+                    tostring(short_name(full_name(holder) or "?")), applied))
+            elseif not state.own_failed then
+                state.own_failed = true
+                trace(string.format("%s: slot %d could not build a dynamic instance", prefix, index))
+            end
+        end
+    end
+end
+
+local function own_slot_active(component, index)
+    if state.own_instances == nil then return false end
+    local key = full_name(component)
+    local instances = key ~= nil and state.own_instances[key] or nil
+    return instances ~= nil and instances[index] ~= nil
+end
+
 -- The game's status system swaps the first material slot of the *head part* when the hero is hurt
 -- (`Hun_Status/MI_ZeroHun_Head_Injured*`, seen in the log as
 -- `material[0] MID_MI_ZeroHun_Head_Injured30_...`). Our mesh ships as that head part, so the dress
@@ -2461,8 +2577,14 @@ local function guard_materials(component, label)
     if type(guard) ~= "table" then return end
     local prefix = label or "material"
     for index, path in pairs(guard) do
-        local want = resolve_material(path)
-        if want == nil then
+        -- a slot on an own material is kept by apply_own_materials; restoring the borrowed instance here
+        -- would make the two fight every scan
+        local want = nil
+        local own = own_slot_active(component, index)
+        if not own then want = resolve_material(path) end
+        if own then
+            -- nothing to do
+        elseif want == nil then
             if not state.guard_missing then
                 state.guard_missing = true
                 trace(prefix .. ": cannot resolve " .. tostring(path))
@@ -2678,6 +2800,7 @@ local function apply_copy_hiding()
                 try("copy keep ticking", function() obj:SetComponentTickEnabled(true) end)
                 trace("copy: made " .. tostring(short_name(key)) .. " evaluate the retarget")
             end
+            apply_own_materials(obj, "copy own material")
             guard_materials(obj, "copy material")
         elseif state.copy_index then
             state.copy_index[carriers[index]] = nil
@@ -2806,7 +2929,10 @@ local function hero_part_components()
             if valid(obj) then
                 local key = full_name(obj)
                 local mesh = key ~= nil and part_mesh_name(obj) or nil
-                if key ~= nil and mesh ~= nil and key ~= state.carrier_name
+                -- the carrier is excluded by its MESH as well as by name: this list is also built before
+                -- setup has recorded `state.carrier_name`, and a carrier taken out of the main pass renders
+                -- as a solid black silhouette (depth only) with nothing ever putting it back
+                if key ~= nil and mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
                     and key ~= state.source_name and not is_weapon_component(obj, mesh) then
                     list[#list + 1] = key
                 end
@@ -2829,8 +2955,8 @@ local function hero_part_components()
             if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
                 local key = full_name(obj)
                 local mesh = part_mesh_name(obj)
-                if mesh ~= nil and key ~= state.carrier_name and key ~= state.source_name
-                    and not is_weapon_component(obj, mesh) then
+                if mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
+                    and key ~= state.source_name and not is_weapon_component(obj, mesh) then
                     -- names, not objects: the wardrobe can destroy a part while the map keeps running
                     list[#list + 1] = key
                 end
@@ -3580,6 +3706,7 @@ local function setup()
     -- Every scan: the game re-applies its damage/status material on the part we ship, which silently
     -- replaced the dress material (see guard_materials).
     if valid(target) then
+        apply_own_materials(target)
         guard_materials(target)
     end
 
@@ -3592,6 +3719,16 @@ local function setup()
     -- patches near the character.
     if config.carrier_cast_shadow == false and valid(target) then
         try("carrier SetCastShadow", function() target:SetCastShadow(false) end)
+    end
+    -- Belt and braces for the black-silhouette failure: whatever took the carrier out of the main pass
+    -- (the part silencing above, or the game's own wardrobe pass), it is drawn again within one scan.
+    if valid(target) then
+        local in_main_pass = nil
+        pcall(function() in_main_pass = target.bRenderInMainPass end)
+        if in_main_pass == false then
+            pcall(function() target:SetRenderInMainPass(true) end)
+            trace("carrier: was out of the main render pass -> restored")
+        end
     end
 
     if state.aligned and not state.dumped_everything and config.dump_census then
@@ -4028,6 +4165,19 @@ local function scan()
     discover_hero()
     setup()
     phase_setup = now_ms() - phase_start
+
+    if not state.arm_capture_done and valid(state.source) and valid(state.carrier) then
+        state.arm_capture_at = state.arm_capture_at or (state.tick + 20)
+        if state.tick >= state.arm_capture_at then
+            state.arm_capture_done = true
+            local ok, err = pcall(function()
+                local capture = assert(loadfile(mod_dir .. "/scripts/capture_pose.lua"))()
+                capture(state.source, state.carrier, mod_dir .. "/arm-pose.jsonl")
+            end)
+            trace_problem(ok and '{"event":"arm_pose_capture","result":"complete"}'
+                or ('{"event":"arm_pose_capture","result":"failed"} ' .. tostring(err)))
+        end
+    end
 
     -- Runs whether or not the retarget is set up (see sweep_other_heroes): the prologue map plays as
     -- the young hero, where the mod has no carrier of its own, but its cutscene copies still need this.

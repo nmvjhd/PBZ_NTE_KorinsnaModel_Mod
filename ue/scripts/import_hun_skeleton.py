@@ -16,7 +16,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 RESULT = os.path.join(ROOT, "extract", "ue-hunskeleton-result.txt")
 
 GAME_DIR = "/HuaShira/Characters/Hero/Hero_Hun"

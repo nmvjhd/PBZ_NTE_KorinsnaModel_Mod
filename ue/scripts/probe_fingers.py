@@ -7,7 +7,7 @@ import os
 
 import unreal
 
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 OUT = os.path.join(ROOT, "extract", "ue-finger-bones.txt")
 
 TARGET_MESH = "/Game/Korinsna/SK_Korinsna"

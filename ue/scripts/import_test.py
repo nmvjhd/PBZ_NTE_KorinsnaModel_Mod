@@ -10,7 +10,7 @@ def log(msg):
     unreal.log("KORINSNA: " + str(msg))
 
 
-FBX = "J:/VS_Projects/PBZ_KorinsnaSkinMod/blender/out/TestSphere.fbx"
+FBX = "D:/Code/personal/game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/blender/out/TestSphere.fbx"
 DEST = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts"
 SKEL_DIR = "/HuaShira/Characters/Hero/Hero_Hun"
 MESH_NAME = "Hun_Body_Simple"

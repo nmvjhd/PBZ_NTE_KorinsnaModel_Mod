@@ -14,8 +14,8 @@
   The game must be closed while copying; the containers are locked otherwise.
 #>
 param(
-    [string]$GameRoot = "K:\SteamLibrary\steamapps\common\PBZ",
-    [string]$RepoRoot = "J:\VS_Projects\PBZ_KorinsnaSkinMod",
+    [string]$GameRoot = "E:\SteamLibrary\steamapps\common\PBZ",
+    [string]$RepoRoot = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
     [string]$Name = "ProjectPBZ-Korinsna-Windows_P",
     [ValidateSet("release", "dev")][string]$Profile = "release"
 )

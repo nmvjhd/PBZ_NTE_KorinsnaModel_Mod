@@ -19,7 +19,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 RESULT = os.path.join(ROOT, "extract", "ue-retarget-result.txt")
 
 DEST = "/Game/Korinsna"
@@ -333,6 +333,12 @@ def main():
                 str(b) for b in bones)))
         log("aligned %d chain(s), retarget pose saved" % aligned)
         EAL.save_loaded_asset(rig_target, False)
+
+    if config.get("game_reference_capture"):
+        import sys
+        sys.path.insert(0, os.path.join(ROOT, "..", "..", "characters", "yae", "scripts"))
+        from author_arm_pose import apply
+        apply(rtg, target_mesh, participating, config["game_reference_capture"], log)
 
     # Op enable flags come from the config too. The IK half of the default stack must stay off: it
     # retargets IK goals, and the target IK Rig has no goals or solvers, so enabling it crashes the

@@ -26,8 +26,8 @@
 #>
 param(
     [ValidateSet("release", "dev", "perf")][string]$Profile = "release",
-    [string]$GameRoot = "K:\SteamLibrary\steamapps\common\PBZ",
-    [string]$RepoRoot = "J:\VS_Projects\PBZ_KorinsnaSkinMod",
+    [string]$GameRoot = "E:\SteamLibrary\steamapps\common\PBZ",
+    [string]$RepoRoot = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
     [switch]$KeepLog
 )
 

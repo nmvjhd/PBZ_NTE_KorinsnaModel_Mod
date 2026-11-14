@@ -9,7 +9,7 @@ import os
 import unreal
 
 EAL = unreal.EditorAssetLibrary
-ROOT = r"J:\VS_Projects\PBZ_KorinsnaSkinMod"
+ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 RESULT = os.path.join(ROOT, "extract", "ue-probe-chains.txt")
 
 IKR_SOURCE = "/Game/Korinsna/IKR_Hun"

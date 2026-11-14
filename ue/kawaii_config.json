@@ -22,7 +22,7 @@
     "偏移是从 Blender rest pose 量出来的：大腿根到膝盖 39.7cm、膝盖到脚踝 42.4cm，",
     "整条腿的骨链是共线的（相邻骨方向点积 0.97~1.0），所以「沿局部 X 偏移」能落到腿里。"
   ],
-  "enabled": true,
+  "enabled": false,
   "defaults": {
     "damping": 0.12,
     "stiffness": 0.06,

@@ -19,8 +19,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = "J:\VS_Projects\PBZ_KorinsnaSkinMod"
-$ue = "K:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+$root = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+$ue = "E:\Game\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 $uproject = Join-Path $root "ue\ProjectPBZ\ProjectPBZ.uproject"
 $cookRoot = Join-Path $root "ue\ProjectPBZ\Saved\Cooked\Windows"
 $dist = Join-Path $root "dist\Korinsna"
@@ -37,7 +37,7 @@ function Invoke-Python([string]$script, [string]$logName) {
 if (-not $SkipCpp) {
     Write-Host "== build editor module"
     & (Join-Path $root "tools\patch_engine_swarm_sdk.ps1") | Out-Host
-    $build = "K:\UnrealEngine\UE_5.7\Engine\Build\BatchFiles\Build.bat"
+    $build = "E:\Game\UE_5.7\Engine\Build\BatchFiles\Build.bat"
     & $build ProjectPBZEditor Win64 Development "-project=$uproject" -waitmutex 2>&1 |
         Out-File (Join-Path $extract "ue-build-module.log") -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw "editor module build failed" }

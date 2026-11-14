@@ -16,7 +16,7 @@
   Run it again after an engine update (it only edits the UBT rules file of the given engine).
 #>
 param(
-    [string]$Engine = "K:\UnrealEngine\UE_5.7"
+    [string]$Engine = "E:\Game\UE_5.7"
 )
 
 $ErrorActionPreference = "Stop"

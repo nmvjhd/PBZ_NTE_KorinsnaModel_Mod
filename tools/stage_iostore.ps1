@@ -23,8 +23,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$uat = "K:\UnrealEngine\UE_5.7\Engine\Build\BatchFiles\RunUAT.bat"
-$unrealPak = "K:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealPak.exe"
+$uat = "E:\Game\UE_5.7\Engine\Build\BatchFiles\RunUAT.bat"
+$unrealPak = "E:\Game\UE_5.7\Engine\Binaries\Win64\UnrealPak.exe"
 $retoc = "J:\retoc\retoc.exe"
 
 $projDir = Split-Path $Project -Parent
@@ -103,5 +103,5 @@ $rsp = Join-Path $env:TEMP "korinsna_empty.rsp"
 Set-Content -Path $rsp -Value "" -Encoding ASCII
 & $unrealPak $outPak "-create=$rsp" | Out-Null
 
-& $retoc info $outUtoc
+if (Test-Path $retoc) { & $retoc info $outUtoc }   # optional inspection tool, not part of the build
 Get-ChildItem $OutDir -Filter "$Name.*" | Format-Table Length, Name -AutoSize

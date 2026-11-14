@@ -1,5 +1,5 @@
 import bpy
-bpy.ops.wm.open_mainfile(filepath=r"J:\VS_Projects\PBZ_KorinsnaSkinMod\KorinsnaModel\npc_036.blend")
+bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\npc_036.blend")
 for o in bpy.data.objects:
     if o.type == 'MESH':
         for i, uv in enumerate(o.data.uv_layers):
