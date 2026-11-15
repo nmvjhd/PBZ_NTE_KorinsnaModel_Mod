@@ -2748,6 +2748,9 @@ end
 -- notification - a class registered twice - harmless).
 local function add_copy_entry(obj, class_name, owner_name)
     if obj == nil then return false end
+    -- the wardrobe preview has its own handler (wardrobe.preview_tick); the generic copy hiding, built for
+    -- cutscene copies, would fight it
+    if owner_name ~= nil and owner_name:find("BP_PreviewAppearance", 1, true) then return false end
     local key = full_name(obj)
     if key == nil or key == state.carrier_name then return false end
     state.copy_list = state.copy_list or {}
@@ -4780,6 +4783,198 @@ function wardrobe.wardrobe_text()
     end
 end
 
+-- The wardrobe preview (BP_PreviewAppearance_Hun). Our outfit is the source body (CharacterMesh0) + the
+-- game head + our mesh as the MeshBand; on the player the mod hides body and head and lets the band
+-- retarget, but the preview is a separate actor that nothing handled: both characters showed at once and
+-- ours stood in its reference (A) pose, since the game drives the preview band with Hun_CopyPose, which
+-- copies by bone name (2026-11-15, F12 diagnostic).
+--
+-- Every scan the preview's parts are looked up by name and the decision is made from the meshes they
+-- hold RIGHT NOW (the wardrobe loads an outfit asynchronously): our band on our body = our outfit.
+--   take:    the band stops following anything and retargets from the body; body, head and brow / lash
+--            card are hidden (visibility only, the body keeps posing).
+--   dress:   our textures go into the material instances the game made for the band (MID_MI_Own_NN, the
+--            ones carrying its DeathDissolve parameters), so the wardrobe's dissolve keeps working; only a
+--            slot still holding the bare MI_Own holder gets an instance of our own.
+--   release: when the band holds a game part again (or the preview actor changes) everything is put
+--            back: the band follows its parent again, our own instances leave its slots, the hidden parts
+--            are shown, the body's tick option is restored.
+-- Two problem-level lines (take / release) make the sequence readable from a release log.
+wardrobe.TICK_OPTIONS = { [0] = "AlwaysTickPoseAndRefreshBones", [1] = "AlwaysTickPose",
+    [2] = "OnlyTickMontagesWhenNotRendered", [3] = "OnlyTickPoseWhenRendered" }
+wardrobe.HIDDEN_PARTS = { "CharacterMesh0", "meshhead", "meshBrowLashCard" }
+
+-- The preview actor when the hook has not reported it yet (it was created before the hooks were
+-- registered); never guesses between several.
+function wardrobe.find_preview_component()
+    if state.tick < (wardrobe.discovery_tick or 0) then return nil end
+    wardrobe.discovery_tick = state.tick + 4
+    local found, count = nil, 0
+    for _, comp in pairs(soft(function() return FindAllOf("BP_AppearanceComp_C") end) or {}) do
+        if usable(comp) and not is_cdo(comp) then
+            local owner = soft(function() return comp:GetOwner() end)
+            local name = owner and full_name(owner) or nil
+            if name ~= nil and name:find("BP_PreviewAppearance_Hun", 1, true) then
+                found, count = comp, count + 1
+            end
+        end
+    end
+    if count ~= 1 then return nil end
+    wardrobe.comp = full_name(found)
+    return found
+end
+
+function wardrobe.preview_parts()
+    local comp = wardrobe.comp and usable(StaticFindObject(wardrobe.comp)) or nil
+    if comp == nil then comp = wardrobe.find_preview_component() end
+    if comp == nil then return nil end
+    local actor = soft(function() return comp:GetOwner() end)
+    local actor_name = actor and full_name(actor) or nil
+    if actor_name == nil then return nil end
+    local path = actor_name:gsub("^%S+%s+", "")
+    local parts = { actor = actor_name }
+    for _, name in ipairs({ "CharacterMesh0", "meshhead", "meshBrowLashCard", "meshBand" }) do
+        local obj = usable(StaticFindObject(path .. "." .. name))
+        if obj ~= nil and full_name(soft(function() return obj:GetOwner() end)) == actor_name then
+            parts[name] = obj
+        end
+    end
+    return parts
+end
+
+-- Our textures into the band's current material instances (see the header). Each instance is dressed
+-- once; the wardrobe makes new ones on every switch, which are new names.
+function wardrobe.dress_preview_band(band, taken)
+    local holders = own_holders(band)
+    if holders == nil then return end
+    for index, holder in pairs(holders) do
+        local have = soft(function() return band:GetMaterial(index) end)
+        local name = (have ~= nil and valid(have)) and full_name(have) or nil
+        if name ~= nil and not taken.dressed[name] then
+            local parent = soft(function() return have.Parent end)
+            if name == full_name(holder) then
+                -- the bare holder renders grey: an instance of our own, removed again on release
+                local made = build_own_instance(band, index, holder)
+                if made ~= nil then
+                    taken.made[index] = made
+                    taken.dressed[full_name(made)] = true
+                end
+            elseif parent ~= nil and valid(parent) and full_name(parent) == full_name(holder) then
+                local applied = 0
+                pcall(function()
+                    holder.TextureParameterValues:ForEach(function(_, element)
+                        local entry = element:get()
+                        local pname = soft(function() return entry.ParameterInfo.Name:ToString() end)
+                        if pname ~= nil and valid(entry.ParameterValue) and pcall(function()
+                            have:SetTextureParameterValueByInfo(
+                                { Name = FName(pname), Association = LAYER_PARAMETER, Index = 0 },
+                                entry.ParameterValue)
+                        end) then
+                            applied = applied + 1
+                        end
+                    end)
+                end)
+                taken.dressed[name] = true
+                trace("wardrobe: preview slot " .. index .. " " .. tostring(short_name(name)) ..
+                    " dressed with " .. applied .. " texture(s)")
+            end
+        end
+    end
+end
+
+function wardrobe.take_preview(parts)
+    local band, driver = parts.meshBand, parts.CharacterMesh0
+    local taken = {
+        actor = parts.actor, band = full_name(band), driver = full_name(driver),
+        tick = soft(function() return driver.VisibilityBasedAnimTickOption end),
+        hidden = {}, dressed = {}, made = {},
+    }
+    try("preview band leader clear", function() band:SetLeaderPoseComponent(nil, true, true) end)
+    soft(function() band:AddTickPrerequisiteComponent(driver) end)
+    try("preview band pp on", function() band:SetDisablePostProcessBlueprint(false) end)
+    try("preview band animation", function() band:SetEnableAnimation(true) end)
+    try("preview band tick", function() band:SetComponentTickEnabled(true) end)
+    -- the hidden body is the pose source: it has to keep posing
+    force_anim_refresh(driver)
+    trace_problem("wardrobe: preview " .. tostring(short_name(parts.actor)) .. " wears our outfit, taken over")
+    return taken
+end
+
+function wardrobe.release_preview(taken, reason)
+    local band = resolve_component(taken.band)
+    local driver = resolve_component(taken.driver)
+    if band ~= nil then
+        if driver ~= nil then soft(function() band:RemoveTickPrerequisiteComponent(driver) end) end
+        -- our own instances out of the slots, back to the mesh's own material
+        local defaults = {}
+        pcall(function()
+            local slot = 0
+            band:GetSkeletalMeshAsset().Materials:ForEach(function(_, element)
+                defaults[slot] = soft(function() return element:get().MaterialInterface end)
+                slot = slot + 1
+            end)
+        end)
+        for index, made in pairs(taken.made) do
+            local have = soft(function() return band:GetMaterial(index) end)
+            if have ~= nil and valid(have) and valid(made) and full_name(have) == full_name(made)
+                and defaults[index] ~= nil then
+                try("preview band material reset", function() band:SetMaterial(index, defaults[index]) end)
+            end
+        end
+        -- a game part follows the body again, as the wardrobe set it up
+        if mesh_name(band) ~= config.carrier_mesh_name then
+            local parent = soft(function() return band:GetAttachParent() end)
+            if parent ~= nil and valid(parent) then
+                try("preview band leader restore", function() band:SetLeaderPoseComponent(parent, true, true) end)
+            end
+        end
+    end
+    for key in pairs(taken.hidden) do
+        local obj = resolve_component(key)
+        if obj ~= nil then try("preview part show", function() obj:SetVisibility(true, false) end) end
+    end
+    if driver ~= nil and taken.tick ~= nil and wardrobe.TICK_OPTIONS[taken.tick] then
+        set_property(driver, "VisibilityBasedAnimTickOption", wardrobe.TICK_OPTIONS[taken.tick])
+    end
+    trace_problem("wardrobe: preview " .. tostring(short_name(taken.actor)) .. " released (" ..
+        tostring(reason) .. ", band now " .. tostring(band and mesh_name(band)) .. ")")
+end
+
+function wardrobe.preview_tick()
+    local parts = wardrobe.preview_parts()
+    local band, driver = parts and parts.meshBand, parts and parts.CharacterMesh0
+    local ours = band ~= nil and driver ~= nil and mesh_name(band) == config.carrier_mesh_name
+        and matches_any(mesh_name(driver), config.source_mesh_names)
+    local taken = wardrobe.preview
+    if taken ~= nil then
+        local reason = nil
+        if parts == nil or parts.actor ~= taken.actor then reason = "preview actor changed"
+        elseif not ours then reason = "outfit changed"
+        elseif full_name(band) ~= taken.band or full_name(driver) ~= taken.driver then reason = "parts changed" end
+        if reason ~= nil then
+            wardrobe.release_preview(taken, reason)
+            wardrobe.preview, taken = nil, nil
+        end
+    end
+    if not ours then return end
+    if taken == nil then
+        taken = wardrobe.take_preview(parts)
+        wardrobe.preview = taken
+    end
+    -- re-asserted every scan, cheap when already right: the wardrobe's own refreshes change visibility
+    if soft(function() return band:IsVisible() end) == false then
+        try("preview band show", function() band:SetVisibility(true, false) end)
+    end
+    for _, name in ipairs(wardrobe.HIDDEN_PARTS) do
+        local obj = parts[name]
+        if obj ~= nil and soft(function() return obj:IsVisible() end) ~= false then
+            taken.hidden[full_name(obj)] = true
+            try("preview part hide", function() obj:SetVisibility(false, false) end)
+        end
+    end
+    wardrobe.dress_preview_band(band, taken)
+end
+
 -- An outfit of our own (config.unlock_outfits, rows added by the mod's outfit table container) is owned
 -- by nobody: the wardrobe would show it locked. The player's appearance component grants it once per
 -- session - the same UnlockOutfit the game calls for its own rewards, so it is stored in the save like
@@ -4843,6 +5038,7 @@ local function scan()
     local phase_start = now_ms()
     wardrobe.unlock_outfits()
     wardrobe.wardrobe_text()
+    wardrobe.preview_tick()
     drain_garments(config.garment_batch or 16)
     -- the player left the bound outfit: the carrier component is still there, but holds another mesh
     if state.actor_name ~= nil and state.carrier_name ~= nil and valid(state.carrier) then
