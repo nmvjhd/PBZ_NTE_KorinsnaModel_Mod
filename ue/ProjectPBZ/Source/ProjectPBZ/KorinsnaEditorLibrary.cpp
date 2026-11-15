@@ -122,6 +122,9 @@ namespace
 		float TeleportDistanceThreshold = 200.0f;
 		float TeleportRotationThreshold = 45.0f;
 		float Alpha = 1.0f;
+		/** cm/s^2; zero keeps the cloth in its authored shape. The game's older KawaiiPhysics has the same
+		 *  Gravity field, so a cloth that should hang (sleeves) gets e.g. (0, 0, -980) with low stiffness. */
+		FVector Gravity = FVector::ZeroVector;
 		EKawaiiPhysicsSimulationSpace SimulationSpace = EKawaiiPhysicsSimulationSpace::ComponentSpace;
 		/** Constrains the bone motion to a plane whose normal is one of the parent bone's axes. "X" is
 		 *  the setting that removed the left-right lurch on this rig while keeping forward/back sway. */
@@ -211,6 +214,13 @@ namespace
 		Profile.TeleportRotationThreshold = static_cast<float>(
 			JsonNumber(Object, TEXT("teleport_rotation_threshold"), Profile.TeleportRotationThreshold));
 		Profile.Alpha = static_cast<float>(JsonNumber(Object, TEXT("alpha"), Profile.Alpha));
+		const TArray<TSharedPtr<FJsonValue>>* GravityValues = nullptr;
+		if (Object->TryGetArrayField(TEXT("gravity"), GravityValues) && GravityValues != nullptr
+			&& GravityValues->Num() == 3)
+		{
+			Profile.Gravity = FVector((*GravityValues)[0]->AsNumber(), (*GravityValues)[1]->AsNumber(),
+				(*GravityValues)[2]->AsNumber());
+		}
 
 		const FString PlanarName = JsonString(Object, TEXT("planar_constraint"), FString());
 		if (PlanarName.Equals(TEXT("X"), ESearchCase::IgnoreCase))
@@ -437,6 +447,7 @@ namespace
 		Node.CapsuleLimits = Profile.Capsules;
 		Node.Alpha = Profile.Alpha;
 		Node.bAlphaBoolEnabled = false;
+		Node.Gravity = Profile.Gravity;
 
 		// runtime state that the editor fills in during a preview; a fresh node must not carry it
 		Node.ModifyBones.Reset();
@@ -1471,7 +1482,7 @@ FString UKorinsnaEditorLibrary::DescribeKawaiiPhysics(const FString& AssetPath)
 			Report.Appendf(TEXT("  kawaii[%d] root=%-14s hasBone=%s settings: damping=%.2f stiffness=%.2f"
 								 " worldDampLoc=%.2f worldDampRot=%.2f limitAngle=%.1f boneRadius=%.2f"
 								 " dummy=%.1f fps=%d space=%d wind=%s worldCol=%s ignoreSelf=%s"
-								 " base=%s spheres=%d exclude=%d capsules=%d alpha=%.2f\n"),
+								 " base=%s spheres=%d exclude=%d capsules=%d alpha=%.2f gravityZ=%.0f\n"),
 				KawaiiCount - 1,
 				*AnimNode->RootBone.BoneName.ToString(),
 				AnimNode->RootBone.BoneName.IsNone() ? TEXT("NO") : TEXT("yes"),
@@ -1485,7 +1496,7 @@ FString UKorinsnaEditorLibrary::DescribeKawaiiPhysics(const FString& AssetPath)
 				AnimNode->bIgnoreSelfComponent ? TEXT("yes") : TEXT("NO"),
 				*AnimNode->SimulationBaseBone.BoneName.ToString(),
 				AnimNode->SphericalLimits.Num(), AnimNode->ExcludeBones.Num(), AnimNode->CapsuleLimits.Num(),
-			AnimNode->Alpha);
+			AnimNode->Alpha, AnimNode->Gravity.Z);
 
 			for (const FSphericalLimit& Limit : AnimNode->SphericalLimits)
 			{
