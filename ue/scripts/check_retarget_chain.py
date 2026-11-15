@@ -8,7 +8,7 @@ import os
 
 import unreal
 
-ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 OUT = os.path.join(ROOT, "extract", "ue-retarget-check.txt")
 EAL = unreal.EditorAssetLibrary
 

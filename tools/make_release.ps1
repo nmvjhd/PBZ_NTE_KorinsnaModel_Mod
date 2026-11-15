@@ -29,7 +29,7 @@
 #>
 param(
     [string]$OutDir = "",
-    [string]$RepoRoot = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
+    [string]$RepoRoot = "D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
     [string]$Name = "ProjectPBZ-Korinsna-Windows_P",
     [switch]$SkipChecks
 )

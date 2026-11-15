@@ -1,5 +1,5 @@
 import struct, os
-out = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\textures"
+out = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\textures"
 
 
 def write_tga(path, w, h, bgra):

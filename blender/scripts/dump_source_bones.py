@@ -2,7 +2,7 @@ import bpy, sys, json
 argv = sys.argv
 argv = argv[argv.index("--") + 1:] if "--" in argv else []
 out = argv[0]
-bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\npc_036.blend")
+bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\npc_036.blend")
 arm = None
 mesh = None
 for o in bpy.data.objects:

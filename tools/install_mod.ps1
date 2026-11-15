@@ -15,7 +15,7 @@
 #>
 param(
     [string]$GameRoot = "E:\SteamLibrary\steamapps\common\PBZ",
-    [string]$RepoRoot = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
+    [string]$RepoRoot = "D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
     [string]$Name = "ProjectPBZ-Korinsna-Windows_P",
     [ValidateSet("release", "dev")][string]$Profile = "release"
 )

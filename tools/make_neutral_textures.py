@@ -9,7 +9,7 @@ overrides have to be at least one VT tile (128) and are kept small and flat:
 import os
 import struct
 
-OUT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\textures"
+OUT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\KorinsnaModel\textures"
 SIZE = 256
 
 

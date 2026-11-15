@@ -27,7 +27,7 @@
 param(
     [ValidateSet("release", "dev", "perf")][string]$Profile = "release",
     [string]$GameRoot = "E:\SteamLibrary\steamapps\common\PBZ",
-    [string]$RepoRoot = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
+    [string]$RepoRoot = "D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod",
     [switch]$KeepLog
 )
 

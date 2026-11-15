@@ -8,8 +8,8 @@ Usage: blender.exe -b --python make_tiny_blank.py
 """
 import bpy
 
-SRC = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\BlankPart.fbx"
-OUT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\BlankPart.fbx"
+SRC = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\BlankPart.fbx"
+OUT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\BlankPart.fbx"
 
 SIZE = 0.6      # cm
 HEIGHT = 95.0   # pelvis height in the hero skeleton's units (cm)

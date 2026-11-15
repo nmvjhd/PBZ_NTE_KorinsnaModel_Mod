@@ -19,7 +19,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 RESULT = os.path.join(ROOT, "extract", "ue-retarget-result.txt")
 
 DEST = "/Game/Korinsna"

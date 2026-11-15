@@ -5,7 +5,7 @@ import math
 import bpy
 from mathutils import Vector
 
-bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\Korinsna_Rigged_source.blend")
+bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\Korinsna_Rigged_source.blend")
 
 COLORS = [
     ("0 red", (1.0, 0.0, 0.0)),
@@ -68,7 +68,7 @@ for tag, angle in (("front", 0.0), ("back", 180.0)):
     light = bpy.data.objects.new("L", light_data)
     bpy.context.collection.objects.link(light)
     light.rotation_euler = (math.radians(60), 0, a + math.radians(25))
-    scene.render.filepath = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\slots-%s.png" % tag
+    scene.render.filepath = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\slots-%s.png" % tag
     bpy.ops.render.render(write_still=True)
     bpy.data.objects.remove(light, do_unlink=True)
 print("slot render done")

@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = "D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+$root = "D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 $ue = "E:\Game\UE_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 $uproject = Join-Path $root "ue\ProjectPBZ\ProjectPBZ.uproject"
 $cookRoot = Join-Path $root "ue\ProjectPBZ\Saved\Cooked\Windows"

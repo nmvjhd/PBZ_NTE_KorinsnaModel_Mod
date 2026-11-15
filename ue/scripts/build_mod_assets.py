@@ -15,7 +15,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-TEX_DIR = "D:/Code/personal/game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/KorinsnaModel/textures"
+TEX_DIR = "D:/Code/personal/pbz-game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/KorinsnaModel/textures"
 
 HOST_MI_DIR = "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Material"
 HOST_TEX_DIR = "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures"
@@ -67,7 +67,7 @@ TEXTURES = [
     (HOST_TEX_DIR, "T_ZeroHun_Cap_V02_N", "T_Korinsna_N", "normal"),
 ]
 
-RESULT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-buildassets-result.txt"
+RESULT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-buildassets-result.txt"
 
 
 def log(msg):

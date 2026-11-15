@@ -4,7 +4,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-TEX_DIR = "D:/Code/personal/game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/extract/testtex"
+TEX_DIR = "D:/Code/personal/pbz-game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/extract/testtex"
 HOST_TEX_DIR = "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures"
 NAMES = ["T_ZeroHun_Cloth_01_BC", "T_ZeroHun_Cloth_02_BC", "T_ZeroHun_Cloth_03_BC",
          "T_ZeroHun_Cloth_04_BC", "T_ZeroHun_Cloth_05_BC", "T_ZeroHun_Cap_V02_BC"]

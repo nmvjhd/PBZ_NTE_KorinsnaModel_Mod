@@ -1,5 +1,5 @@
 import bpy
-bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\Korinsna_Rigged.blend")
+bpy.ops.wm.open_mainfile(filepath=r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\blender\out\Korinsna_Rigged.blend")
 for o in bpy.data.objects:
     if o.type == 'MESH':
         print("MESH", o.name, "dims", tuple(round(v,2) for v in o.dimensions), "loc", tuple(round(v,2) for v in o.location))

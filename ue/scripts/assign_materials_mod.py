@@ -19,7 +19,7 @@ MIS = [
 def log(msg):
     unreal.log("KORINSNA: " + str(msg))
     try:
-        with open(r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-assign-result.txt", "a", encoding="utf-8") as fh:
+        with open(r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-assign-result.txt", "a", encoding="utf-8") as fh:
             fh.write(str(msg) + "\n")
     except Exception:
         pass
