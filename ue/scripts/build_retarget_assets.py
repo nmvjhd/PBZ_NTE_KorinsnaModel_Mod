@@ -45,7 +45,10 @@ CONFIG_PATH = os.path.join(ROOT, "ue", "retarget_config.json")
 #     generated from this file (component-space simulation, so world movement never enters the solver);
 #   * ue/kawaii_config.json - the previous KawaiiPhysics path, kept as a reference/fallback (its "mode"
 #     key decides which one the C++ authoring step builds).
-PHYSICS_CONFIG = os.path.join(ROOT, "ue", "kawaii_config.json")
+#   * PBZ_PHYSICS_CONFIG (set by the character builder from build.json "physics") points at a character's
+#     own file instead: chain roots and collider bones are per-skeleton, so one shared file cannot serve
+#     every character. Unset = the shared file above.
+PHYSICS_CONFIG = os.environ.get("PBZ_PHYSICS_CONFIG") or os.path.join(ROOT, "ue", "kawaii_config.json")
 
 
 def load_config():
