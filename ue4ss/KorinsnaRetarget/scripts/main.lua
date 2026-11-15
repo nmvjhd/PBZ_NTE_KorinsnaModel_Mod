@@ -688,12 +688,15 @@ local function hide_part(component, label)
     trace("hidden " .. label)
 end
 
+-- Only the component itself, never its children (bPropagateToChildren = false): the weapons and the waist
+-- knife are re-parented onto the carrier, and propagating would also un-hide their editor helpers (the
+-- red ArrowComponent and the collision box wireframe seen after switching outfits back and forth).
 local function show_part(component)
     if not valid(component) then return end
     pcall(function() component:SetRenderInMainPass(true) end)
     pcall(function() component:SetCastShadow(true) end)
-    pcall(function() component:SetHiddenInGame(false, true) end)
-    pcall(function() component:SetVisibility(true, true) end)
+    pcall(function() component:SetHiddenInGame(false, false) end)
+    pcall(function() component:SetVisibility(true, false) end)
 end
 
 local function component_list(actor)
@@ -1587,8 +1590,8 @@ local function create_own_body(actor, mesh, class, source)
     trace("own body: mesh=" .. tostring(mesh_name(component)) ..
         " bones=" .. tostring(bone_count(component)))
     try("SetCollisionEnabled", function() component:SetCollisionEnabled(0) end)
-    try("SetVisibility", function() component:SetVisibility(true, true) end)
-    try("SetHiddenInGame", function() component:SetHiddenInGame(false, true) end)
+    try("SetVisibility", function() component:SetVisibility(true, false) end)
+    try("SetHiddenInGame", function() component:SetHiddenInGame(false, false) end)
     try("SetGenerateOverlapEvents", function() component:SetGenerateOverlapEvents(false) end)
     trace("own body: RegisterComponent -> " ..
         tostring(try("RegisterComponent", function() return component:RegisterComponent() end)) ..
@@ -4934,7 +4937,7 @@ end
 local function toggle_ours()
     state.show_ours = not state.show_ours
     if valid(state.carrier) then
-        pcall(function() state.carrier:SetVisibility(state.show_ours, true) end)
+        pcall(function() state.carrier:SetVisibility(state.show_ours, false) end)
     end
     trace("carrier visible=" .. tostring(state.show_ours))
 end
