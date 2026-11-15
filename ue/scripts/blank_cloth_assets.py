@@ -47,6 +47,24 @@ def main():
         raise SystemExit(
             "ChaosClothAsset is not exposed - enable the ChaosClothAsset plugin in the uproject")
 
+    # PBZ_KEEP_DEFAULT_OUTFIT=1: see import_blank_parts.py - the default outfit's cloth stays the game's own
+    if os.environ.get("PBZ_KEEP_DEFAULT_OUTFIT"):
+        # A Chaos Cloth asset cannot be deleted through the editor once it has been loaded (the same reason
+        # the emptying below reports "could not clear" on a second run), so the package FILE is removed
+        # without ever loading it; the cook runs in a fresh process and only sees what is on disk.
+        folder = os.path.join(ROOT, "ue", "ProjectPBZ", "Plugins", "HuaShira", "Content",
+                              *CLOTH_DIR.split("/")[2:])
+        removed = 0
+        for name in CLOTH:
+            package = os.path.join(folder, name + ".uasset")
+            if os.path.isfile(package):
+                os.remove(package)
+                removed += 1
+            if os.path.isfile(package):
+                raise SystemExit("could not delete the stale empty cloth asset %s" % package)
+        log("default outfit kept: 0 cloth assets emptied, %d stale one(s) removed" % removed)
+        return
+
     if not EAL.does_directory_exist(CLOTH_DIR):
         EAL.make_directory(CLOTH_DIR)
 

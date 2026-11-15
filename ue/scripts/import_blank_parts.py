@@ -167,6 +167,21 @@ def main():
         else:
             log("FAILED   could not delete %s" % restored)
 
+    # PBZ_KEEP_DEFAULT_OUTFIT=1: the character is bound to another outfit (its carrier is not the shared head
+    # part), so the default outfit must stay the game's own. Nothing is blanked, and blanks left in the
+    # project by an earlier build are deleted - otherwise they would still be cooked and shipped.
+    if os.environ.get("PBZ_KEEP_DEFAULT_OUTFIT"):
+        removed = 0
+        for folder, name in BLANKED:
+            path = folder + "/" + name
+            if EAL.does_asset_exist(path):
+                if discard(path):
+                    removed += 1
+                else:
+                    raise SystemExit("could not delete the stale blank part %s" % path)
+        log("default outfit kept: 0 parts blanked, %d stale blank(s) removed" % removed)
+        return
+
     ok = 0
     for folder, name in BLANKED:
         fbx = BLANK_BODY_FBX if name == "Hun_Body_Simple" else BLANK_FBX

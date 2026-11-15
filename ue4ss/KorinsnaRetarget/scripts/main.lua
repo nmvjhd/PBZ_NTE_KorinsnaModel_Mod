@@ -596,6 +596,7 @@ local RESET_KEYS = {
     "copy_scanned",
     "discover_tick", "discover_sweep_tick", "weapon_reanchor_wait",
     "leader_clears", "pose_post_missing", "shadow_write_tries",
+    "shared_parts_tick", "shared_parts_runs", "hidden_before", "back_sockets",
 }
 
 local function reset_actor_state(reason)
@@ -921,6 +922,17 @@ local function remember_hidden(component, label)
     state.hidden_list = state.hidden_list or {}
     state.hidden_list[#state.hidden_list + 1] = component
     state.hidden[component] = label
+    -- what the part looked like before it was hidden, so that leaving the bound outfit can put it back
+    -- exactly (the game hides some parts itself, e.g. the hat) - see release_outfit
+    if state.hidden_before == nil then state.hidden_before = {} end
+    if key ~= nil and state.hidden_before[key] == nil then
+        local before = {}
+        pcall(function() before.visible = component:IsVisible() end)
+        pcall(function() before.hidden_in_game = component.bHiddenInGame end)
+        pcall(function() before.main_pass = component.bRenderInMainPass end)
+        pcall(function() before.cast_shadow = component.CastShadow end)
+        state.hidden_before[key] = before
+    end
     apply_hide(component)
 end
 
@@ -2302,6 +2314,13 @@ local function anchor_back_items()
                 -- anchored already; the game's wardrobe pass hides it again every so often
                 show_part(obj)
             elseif parent_name == source_name then
+                -- remembered so release_outfit can hang it back where the game had it
+                local back_socket = nil
+                pcall(function() back_socket = obj:GetAttachSocketName():ToString() end)
+                if back_socket ~= nil then
+                    if state.back_sockets == nil then state.back_sockets = {} end
+                    state.back_sockets[key] = back_socket
+                end
                 try("attach back item " .. tostring(mesh), function()
                     return obj:K2_AttachToComponent(carrier, FName("Bip001-Pelvis"),
                         1, 1, 1, false)
@@ -2727,11 +2746,38 @@ local function apply_copy_hiding()
     if list == nil then return end
     state.copy_hidden = state.copy_hidden or {}
     state.copy_leader = state.copy_leader or {}
+
+    -- Which copies actually wear the outfit this mod is bound to: only those carry our mesh, and only
+    -- their original outfit may be hidden. A copy in any other outfit (the appearance preview while
+    -- browsing, a cutscene that dresses the hero itself) has no carrier and must stay the game's own -
+    -- hiding its parts would leave an invisible hero.
+    local outfit_owners = {}
+    for _, carrier_key in ipairs(state.copy_carriers or {}) do
+        local carrier = resolve_component(carrier_key)
+        if carrier ~= nil and mesh_name(carrier) == config.carrier_mesh_name then
+            local owner_name = full_name(soft(function() return carrier:GetOwner() end))
+            if owner_name ~= nil then outfit_owners[owner_name] = true end
+        end
+    end
+    state.copy_outfit_owners = outfit_owners
+
     local dead = nil
     for index = 1, #list do
         local entry = list[index]
+        if entry.mesh ~= config.carrier_mesh_name and not outfit_owners[entry.owner] then
+            -- not (or no longer) in our outfit: undo a hide from an earlier scan, once
+            if state.copy_hidden[entry.key] then
+                state.copy_hidden[entry.key] = nil
+                local obj = resolve_component(entry.key)
+                if obj ~= nil then
+                    pcall(function() obj:SetHiddenInGame(false, false) end)
+                    pcall(function() obj:SetVisibility(true, false) end)
+                    pcall(function() obj:SetRenderInMainPass(true) end)
+                    pcall(function() obj:SetCastShadow(true) end)
+                end
+            end
         -- never hide our own mesh, whatever the classification said
-        if entry.mesh ~= config.carrier_mesh_name then
+        elseif entry.mesh ~= config.carrier_mesh_name then
             local obj = resolve_component(entry.key)
             -- Object names are recycled: `resolve_component` only proves that the name still maps to
             -- some live object, so the owner has to match as well before another SetVisibility is sent.
@@ -2863,10 +2909,25 @@ local function apply_cloth_hiding()
             if state.cloth_index then state.cloth_index[key] = nil end
         else
             kept[#kept + 1] = key
-            try("cloth SetVisibility", function() obj:SetVisibility(false, false) end)
-            try("cloth SetHiddenInGame", function() obj:SetHiddenInGame(true, false) end)
-            try("cloth SetRenderInMainPass", function() obj:SetRenderInMainPass(false) end)
-            try("cloth SetCastShadow", function() obj:SetCastShadow(false) end)
+            -- garments are only hidden on an actor that wears the bound outfit: the adopted player (he is
+            -- only adopted with the carrier on him) or a copy that carries our mesh
+            local owner_name = state.cloth_index and state.cloth_index[key] or nil
+            local in_outfit = owner_name ~= nil and (owner_name == state.actor_name
+                or (state.copy_outfit_owners ~= nil and state.copy_outfit_owners[owner_name] == true))
+            if state.cloth_hidden == nil then state.cloth_hidden = {} end
+            if in_outfit then
+                state.cloth_hidden[key] = true
+                try("cloth SetVisibility", function() obj:SetVisibility(false, false) end)
+                try("cloth SetHiddenInGame", function() obj:SetHiddenInGame(true, false) end)
+                try("cloth SetRenderInMainPass", function() obj:SetRenderInMainPass(false) end)
+                try("cloth SetCastShadow", function() obj:SetCastShadow(false) end)
+            elseif state.cloth_hidden[key] then
+                state.cloth_hidden[key] = nil
+                pcall(function() obj:SetHiddenInGame(false, false) end)
+                pcall(function() obj:SetVisibility(true, false) end)
+                pcall(function() obj:SetRenderInMainPass(true) end)
+                pcall(function() obj:SetCastShadow(true) end)
+            end
         end
     end
     if #kept ~= #list then state.cloth_list = kept end
@@ -3972,6 +4033,143 @@ end
 -- player pawn, so a cutscene copy can never be taken for the player.
 -- `discover_hero` is the only discovery mechanism now that the engine mesh classes are no longer
 -- listened to, so it has to be cheap enough to run often - hence the cached pawn above.
+-- Parts of the bound outfit that are still the game's own meshes. They are shared with other outfits (the
+-- head, the brow / lash card) or simply not replaced (the hat), so they cannot be blanked at asset level
+-- without breaking the default outfit; they are hidden on the adopted hero at run time instead, and
+-- release_outfit shows them again.
+--
+-- Finding them needs one level-wide search, so it only runs a few times after the hero is aligned (the
+-- game's wardrobe assigns the outfit meshes over the first seconds) and then rarely; re-applying the hide
+-- to the parts already known is cheap and done every scan, because the wardrobe turns them back on.
+local function hide_shared_parts()
+    if config.hide_shared_parts == false then return end
+    if state.actor_name == nil or not state.aligned then return end
+    if state.hidden_list then reapply_hidden() end
+
+    local runs = state.shared_parts_runs or 0
+    local wait = ({ 0, 6, 20, 60 })[runs + 1] or (config.shared_parts_every or 240)
+    if state.shared_parts_tick ~= nil and state.tick - state.shared_parts_tick < wait then return end
+    state.shared_parts_tick = state.tick
+    state.shared_parts_runs = runs + 1
+
+    local objects = nil
+    pcall(function() objects = FindAllOf("SkeletalMeshComponent") end)
+    if type(objects) ~= "table" then return end
+    for _, obj in pairs(objects) do
+        if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
+            local key = full_name(obj)
+            local mesh = part_mesh_name(obj)
+            if key ~= nil and mesh ~= nil and key ~= state.carrier_name and key ~= state.source_name
+                and not is_carrier_mesh(mesh)
+                and contains_any(mesh, config.hide_prefixes) and not contains_any(mesh, config.keep_visible)
+                and not is_weapon_component(obj, mesh)
+                and (state.hidden_before == nil or state.hidden_before[key] == nil) then
+                remember_hidden(obj, tostring(mesh) .. " (" .. tostring(short_name(key)) .. ")")
+                trace("outfit: hiding the shared part " .. tostring(mesh))
+            end
+        end
+    end
+end
+
+-- The mod is bound to ONE outfit: its mesh ships as a part only that outfit uses (config.carrier_mesh_name),
+-- and the hero is only adopted while his body is that outfit's body (config.source_mesh_names). When the
+-- player changes outfit in the game's own appearance menu, the same components simply get other meshes -
+-- so everything this script did to the hero has to be undone, or the original outfit comes back hidden,
+-- with the weapons hanging off bones that no longer exist. After this the hero is unknown again; picking
+-- the bound outfit later goes through the normal discovery and setup.
+local function release_outfit(reason)
+    local actor_name, source, carrier = state.actor_name, state.source, state.carrier
+    trace_problem("outfit: releasing the hero (" .. tostring(reason) .. ")")
+
+    -- weapons and back items return to the socket the game had them on
+    if valid(source) then
+        for root_key, socket in pairs(state.weapon_sockets or {}) do
+            local root = resolve_component(root_key)
+            if root ~= nil then
+                pcall(function() root:K2_AttachToComponent(source, FName(socket), 2, 2, 2, false) end)
+            end
+        end
+        for key, socket in pairs(state.back_sockets or {}) do
+            local obj = resolve_component(key)
+            if obj ~= nil then
+                pcall(function() obj:K2_AttachToComponent(source, FName(socket), 2, 2, 2, false) end)
+            end
+        end
+    end
+
+    -- every part of the hero back to how the game had it: the recorded state where one exists (parts this
+    -- script hid), otherwise just back into the main and shadow passes (parts it only silenced)
+    local before = state.hidden_before or {}
+    local objects = nil
+    pcall(function() objects = FindAllOf("SkeletalMeshComponent") end)
+    if type(objects) == "table" then
+        for _, obj in pairs(objects) do
+            if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, actor_name) then
+                local key = full_name(obj)
+                local was = key ~= nil and before[key] or nil
+                local mesh = part_mesh_name(obj)
+                if mesh == nil or not is_weapon_component(obj, mesh) then
+                    pcall(function() obj:SetRenderInMainPass(was == nil or was.main_pass ~= false) end)
+                    pcall(function() obj:SetCastShadow(was == nil or was.cast_shadow ~= false) end)
+                    if was ~= nil then
+                        pcall(function() obj:SetHiddenInGame(was.hidden_in_game == true, false) end)
+                        pcall(function() obj:SetVisibility(was.visible ~= false, false) end)
+                    end
+                end
+            end
+        end
+    end
+    -- the body is the one part that is always meant to be seen
+    if valid(source) then
+        pcall(function() source:SetHiddenInGame(false, false) end)
+        pcall(function() source:SetVisibility(true, false) end)
+        pcall(function() source:SetRenderInMainPass(true) end)
+        pcall(function() source:SetCastShadow(true) end)
+    end
+
+    -- garments of this actor
+    for _, key in ipairs(state.cloth_list or {}) do
+        if state.cloth_index ~= nil and state.cloth_index[key] == actor_name then
+            local obj = resolve_component(key)
+            if obj ~= nil then
+                pcall(function() obj:SetHiddenInGame(false, false) end)
+                pcall(function() obj:SetVisibility(true, false) end)
+                pcall(function() obj:SetRenderInMainPass(true) end)
+                pcall(function() obj:SetCastShadow(true) end)
+            end
+            if state.cloth_hidden ~= nil then state.cloth_hidden[key] = nil end
+        end
+    end
+
+    -- the part that carried our mesh is an ordinary follower of the body again, without our materials
+    if valid(carrier) then
+        pcall(function() carrier:EmptyOverrideMaterials() end)
+        if valid(source) then
+            pcall(function() carrier:SetLeaderPoseComponent(source, true, true) end)
+        end
+        pcall(function() carrier:SetCastShadow(true) end)
+    end
+
+    -- let the game re-apply what depends on its own state (hat shown or hidden, which garments are live)
+    local appearance = nil
+    pcall(function()
+        for _, comp in pairs(FindAllOf("BP_AppearanceComp_C") or {}) do
+            if usable(comp) and full_name(soft(function() return comp:GetOwner() end)) == actor_name then
+                appearance = comp
+            end
+        end
+    end)
+    if appearance ~= nil then
+        pcall(function() appearance:RefreshClothComponents() end)
+        pcall(function() appearance:ApplyHatVisibilityVisual() end)
+    end
+
+    state.hidden_before = nil
+    state.back_sockets = nil
+    state.own_instances = nil
+    reset_actor_state(reason)
+end
+
 local function discover_hero()
     -- "Complete" needs both the body (the retarget source) and the carrier part. Until both are held,
     -- the fast cadence applies: a missing carrier is the difference between a working mod and Korinsna
@@ -4162,8 +4360,16 @@ local function scan()
     end
     local phase_start = now_ms()
     drain_garments(config.garment_batch or 16)
+    -- the player left the bound outfit: the carrier component is still there, but holds another mesh
+    if state.actor_name ~= nil and state.carrier_name ~= nil and valid(state.carrier) then
+        local held = mesh_name(state.carrier)
+        if held ~= config.carrier_mesh_name then
+            release_outfit("the carrier part now holds " .. tostring(held))
+        end
+    end
     discover_hero()
     setup()
+    hide_shared_parts()
     phase_setup = now_ms() - phase_start
 
     if not state.arm_capture_done and valid(state.source) and valid(state.carrier) then

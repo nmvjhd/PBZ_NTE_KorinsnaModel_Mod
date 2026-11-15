@@ -14,7 +14,7 @@ EAL = unreal.EditorAssetLibrary
 
 ANIM_BP = "/Game/Korinsna/ABP_Korinsna_Retarget"
 RETARGETER = "/Game/Korinsna/RTG_HunToKorinsna"
-CARRIER = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
+CARRIER = os.environ.get("PBZ_CARRIER_PATH") or "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
 SOURCE_MESH = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Body_Simple"
 STANDALONE = "/Game/Korinsna/SK_Korinsna"
 

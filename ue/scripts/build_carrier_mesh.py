@@ -29,8 +29,12 @@ ROOT = r"D:\Code\personal\game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_APose.fbx").replace("\\", "/")
 RESULT = os.path.join(ROOT, "extract", "ue-carrier-result.txt")
 
-DEST = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts"
-NAME = "Hun_Head_New"
+DEFAULT_CARRIER = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
+# PBZ_CARRIER_PATH: ship the mesh as a different game part, e.g. the hair band only one outfit uses
+# (/HuaShira/Characters/Hero/Hero_Hun_FengXueDaoke/Cloth/Hun_FengXueDaoKe_Hair_Band). The shared head part
+# is then left alone, and a carrier an earlier build put there is deleted so it is not shipped again.
+CARRIER = os.environ.get("PBZ_CARRIER_PATH") or DEFAULT_CARRIER
+DEST, NAME = CARRIER.rsplit("/", 1)
 SKELETON = "/Game/Korinsna/SK_Korinsna_Skeleton"
 ANIM_BP = "/Game/Korinsna/ABP_Korinsna_Retarget"
 TARGET_MESH = "/Game/Korinsna/SK_Korinsna"
@@ -49,6 +53,17 @@ def main():
     anim_bp = EAL.load_asset(ANIM_BP)
     if anim_bp is None:
         raise SystemExit("missing " + ANIM_BP + " (run build_retarget_assets.py first)")
+
+    if CARRIER != DEFAULT_CARRIER and EAL.does_asset_exist(DEFAULT_CARRIER):
+        stale = EAL.load_asset(DEFAULT_CARRIER)
+        if stale is not None:
+            EAL.delete_loaded_asset(stale)
+            unreal.SystemLibrary.collect_garbage()
+        if EAL.does_asset_exist(DEFAULT_CARRIER):
+            raise SystemExit("could not delete the stale carrier " + DEFAULT_CARRIER)
+        log("removed the stale carrier at %s" % DEFAULT_CARRIER)
+    if not EAL.does_directory_exist(DEST):
+        EAL.make_directory(DEST)
 
     path = DEST + "/" + NAME
     if EAL.does_asset_exist(path):
