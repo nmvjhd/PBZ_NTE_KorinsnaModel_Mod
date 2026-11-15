@@ -2689,6 +2689,9 @@ end
 -- notification - a class registered twice - harmless).
 local function add_copy_entry(obj, class_name, owner_name)
     if obj == nil then return false end
+    -- the wardrobe preview has its own handler (wardrobe.preview_tick): the generic copy hiding, built for
+    -- cutscene copies, lost track of it while the wardrobe loaded an outfit asynchronously
+    if owner_name ~= nil and owner_name:find("BP_PreviewAppearance", 1, true) then return false end
     local key = full_name(obj)
     if key == nil or key == state.carrier_name then return false end
     state.copy_list = state.copy_list or {}
@@ -2759,6 +2762,43 @@ local function apply_copy_hiding()
     if list == nil then return end
     state.copy_hidden = state.copy_hidden or {}
     state.copy_leader = state.copy_leader or {}
+
+    -- Live classification. The wardrobe preview changes outfit while it stays the same actor with the same
+    -- components, and the new meshes arrive asynchronously - later than any one-off rebuild can be timed
+    -- (in game: a rebuild right after the switch saw the old meshes, hid the incoming 风雪 parts for a few
+    -- seconds, and a switch to our outfit was sometimes never noticed). So every scan each known copy
+    -- component is checked for what it holds NOW: one that took our mesh becomes a carrier, a carrier that
+    -- got a game part back is an ordinary part again. Only the copies' own few components are touched.
+    local carriers_now, list_now = {}, {}
+    for index = 1, #list do
+        local entry = list[index]
+        local obj = resolve_component(entry.key)
+        local held = obj ~= nil and mesh_name(obj) or nil
+        if held == config.carrier_mesh_name then
+            carriers_now[#carriers_now + 1] = entry.key
+            if state.copy_index then state.copy_index[entry.key] = "carrier" end
+            state.copy_hidden[entry.key] = nil
+            trace("copy: " .. tostring(short_name(entry.key)) .. " now carries our mesh")
+        else
+            if obj ~= nil then entry.mesh = held end
+            list_now[#list_now + 1] = entry
+        end
+    end
+    for _, key in ipairs(state.copy_carriers or {}) do
+        local obj = resolve_component(key)
+        if obj ~= nil and mesh_name(obj) ~= config.carrier_mesh_name then
+            local class = soft(function() return obj:GetClass() end)
+            local owner_name = full_name(soft(function() return obj:GetOwner() end))
+            list_now[#list_now + 1] = copy_component_entry(obj, class and short_name(full_name(class)) or nil,
+                owner_name)
+            if state.copy_index then state.copy_index[key] = "hide" end
+            trace("copy: " .. tostring(short_name(key)) .. " holds a game part again")
+        else
+            carriers_now[#carriers_now + 1] = key
+        end
+    end
+    state.copy_list, state.copy_carriers = list_now, carriers_now
+    list = list_now
 
     -- Which copies actually wear the outfit this mod is bound to: only those carry our mesh, and only
     -- their original outfit may be hidden. A copy in any other outfit (the appearance preview while
@@ -2859,6 +2899,13 @@ local function apply_copy_hiding()
                 try("copy keep ticking", function() obj:SetComponentTickEnabled(true) end)
                 trace("copy: made " .. tostring(short_name(key)) .. " evaluate the retarget")
             end
+            -- the wardrobe preview keeps its MeshBand component hidden (it has no band to show); ours
+            -- is the whole character there
+            if soft(function() return obj:IsVisible() end) == false then
+                try("copy carrier SetVisibility", function() obj:SetVisibility(true, false) end)
+                try("copy carrier SetHiddenInGame", function() obj:SetHiddenInGame(false, false) end)
+                trace("copy: showed the hidden carrier " .. tostring(short_name(key)))
+            end
             apply_own_materials(obj, "copy own material")
             guard_materials(obj, "copy material")
         elseif state.copy_index then
@@ -2866,6 +2913,26 @@ local function apply_copy_hiding()
         end
     end
     state.copy_carriers = alive_carriers
+
+    -- A component that carried our mesh and now holds a game part again (the preview switched to another
+    -- outfit): its leader pose was cleared above, so it would stand in the reference pose. It follows its
+    -- attach parent (the copy's body) again.
+    local carrying = {}
+    for _, key in ipairs(alive_carriers) do carrying[key] = true end
+    for key in pairs(state.copy_leader) do
+        if not carrying[key] then
+            state.copy_leader[key] = nil
+            local obj = resolve_component(key)
+            if obj ~= nil and mesh_name(obj) ~= config.carrier_mesh_name then
+                local parent = soft(function() return obj:GetAttachParent() end)
+                if parent ~= nil and valid(parent) then
+                    try("copy leader pose restore",
+                        function() obj:SetLeaderPoseComponent(parent, true, true) end)
+                    trace("copy: " .. tostring(short_name(key)) .. " follows its parent again")
+                end
+            end
+        end
+    end
 end
 
 -- Rare: the Chaos Cloth garments and hair grooms on any hero (the wardrobe has variants whose assets
@@ -2922,10 +2989,14 @@ local function apply_cloth_hiding()
             if state.cloth_index then state.cloth_index[key] = nil end
         else
             kept[#kept + 1] = key
-            -- garments are only hidden on an actor that wears the bound outfit: the adopted player (he is
-            -- only adopted with the carrier on him) or a copy that carries our mesh
+            -- garments are only hidden on an actor that wears the bound outfit: the adopted player while
+            -- our carrier is on him, or a copy that carries our mesh. The player is adopted by his body
+            -- alone, and that body can be shared with a game outfit (an outfit of our own reuses the
+            -- FengXue body), whose cloth must then stay visible.
             local owner_name = state.cloth_index and state.cloth_index[key] or nil
-            local in_outfit = owner_name ~= nil and (owner_name == state.actor_name
+            local player_in_outfit = owner_name == state.actor_name and valid(state.carrier)
+                and mesh_name(state.carrier) == config.carrier_mesh_name
+            local in_outfit = owner_name ~= nil and (player_in_outfit
                 or (state.copy_outfit_owners ~= nil and state.copy_outfit_owners[owner_name] == true))
             if state.cloth_hidden == nil then state.cloth_hidden = {} end
             if in_outfit then
@@ -2962,9 +3033,15 @@ local function sweep_other_heroes()
     local need_copies = want_copies
         and (state.copy_list == nil or state.copy_dirty == true)
     local need_cloth = want_cloth and state.cloth_list == nil
-    local allowed = since_last >= (config.copy_rescan_min_scans or 4)
+    -- the wardrobe just changed the preview's outfit (see `on_outfit_applied`): rebuild on this scan, the
+    -- player is looking at the preview and a two-second wait shows him the original outfit first
+    local allowed = since_last >= (config.copy_rescan_min_scans or 4) or state.copy_force == true
+    if state.copy_force and need_copies then
+        need_cloth = want_cloth   -- the preview's garments changed together with its parts
+    end
     if (need_copies or need_cloth) and allowed then
         state.copy_dirty = false
+        state.copy_force = false
         state.copy_scan_tick = state.tick
         if need_copies then
             collect_copy_components()
@@ -4517,6 +4594,394 @@ local function drain_garments(limit)
 end
 
 
+-- The wardrobe (W_Appearance_V2) shows an outfit on a preview actor (BP_PreviewAppearance_Hun), which is a
+-- hero copy, and writes the outfit's title and description itself - but only for the game's own outfits:
+-- for a row the mod added the panel stays empty. Both are handled from one signal, a hook on the native
+-- appearance component's EquipOutfit / ApplyOutfitVisual, which the wardrobe calls whenever the preview
+-- changes:
+--   * the copy lists are rebuilt on the next scan (`copy_force`): an outfit of our own has no Chaos Cloth,
+--     so no garment spawns to announce the preview, and it would keep the original hero's look;
+--   * while the previewed outfit is one of `config.outfit_text`, its title / description are written into
+--     the panel's W_UnifiedTextDescription (ItemNameText / DetailText) every scan, because the wardrobe
+--     clears them again on its own refreshes.
+local wardrobe = { hooked = false, outfit = nil, text_tick = nil, panels = nil }
+
+-- The game's wardrobe reads this CVar once when it opens. Its dissolve progress can stall
+-- on a full-character carrier, causing a 2 s effect + 10 s timeout before the first swap.
+-- Use the game's supported direct-preview mode, only for characters that opt in. The CVar is
+-- process-local and resets when the game exits; it affects all wardrobe previews for the session.
+function wardrobe.configure_transition()
+    if not config.preview_direct_switch or wardrobe.direct_ready then return end
+    if state.tick < (wardrobe.direct_retry_tick or 0) then return end
+    wardrobe.direct_retry_tick = state.tick + 4
+    local library = usable(StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"))
+    if library == nil then return end
+    local cvar = "PBZ.AppearancePreview.DissolveTransition"
+    local ok, before = pcall(function() return library:GetConsoleVariableBoolValue(cvar) end)
+    if not ok or type(before) ~= "boolean" then
+        if not wardrobe.direct_read_failed then
+            wardrobe.direct_read_failed = true
+            trace_problem('{"event":"wardrobe_direct_preview","result":"read_failed"}')
+        end
+        return
+    end
+    if before then
+        local controllers = try("FindAllOf PlayerController for preview",
+            function() return FindAllOf("PlayerController") end)
+        if type(controllers) ~= "table" then return end
+        local sent = false
+        for _, controller in pairs(controllers) do
+            if usable(controller) and not is_cdo(controller) then
+                sent = pcall(function() controller:ConsoleCommand("PBZ.AppearancePreview.DissolveTransition 0") end)
+                if sent then break end
+            end
+        end
+        if not sent then return end
+    end
+    local verified, after = pcall(function() return library:GetConsoleVariableBoolValue(cvar) end)
+    if verified and after == false then
+        wardrobe.direct_ready = true
+        trace_profile(string.format('{"event":"wardrobe_direct_preview","result":"enabled","previous":%s}',
+            tostring(before)))
+    elseif not wardrobe.direct_set_failed then
+        wardrobe.direct_set_failed = true
+        trace_problem('{"event":"wardrobe_direct_preview","result":"verification_failed"}')
+    end
+end
+
+function wardrobe.outfit_name_of(param)
+    local value = soft(function() return param:get() end)
+    if value == nil then return nil end
+    return soft(function() return value:ToString() end) or tostring(value)
+end
+
+function wardrobe.on_outfit_applied(kind, context, id)
+    local comp = soft(function() return context:get() end)
+    local outfit = wardrobe.outfit_name_of(id)
+    local owner = comp and soft(function() return comp:GetOwner() end)
+    local owner_name = owner and full_name(owner) or nil
+    if owner_name ~= nil and owner_name:find("BP_PreviewAppearance_Hun", 1, true) then
+        wardrobe.outfit = outfit
+        wardrobe.text_tick = nil
+        -- remembered so `previewed_outfit` can ask the preview itself every scan: the hook alone missed
+        -- the switch back to a game outfit in game (the panel kept our title on 风雪)
+        wardrobe.comp = full_name(comp)
+        wardrobe.mesh_signature = nil
+        trace_profile(string.format('{"event":"wardrobe_request","kind":%q,"outfit":%q,"actor":%q}',
+            kind, tostring(outfit), tostring(short_name(owner_name))))
+        trace("wardrobe: " .. kind .. " " .. tostring(outfit) .. " on " .. tostring(short_name(owner_name)))
+    end
+end
+
+function wardrobe.hook_wardrobe(comp)
+    if wardrobe.hooked or type(RegisterHook) ~= "function" then return end
+    wardrobe.hooked = true
+    -- the native class's path is read from the component's class chain, not guessed
+    local class = soft(function() return comp:GetClass() end)
+    local native = nil
+    for _ = 1, 8 do
+        if class == nil then break end
+        local name = full_name(class)
+        if name ~= nil and name:find("%.PBZAppearanceComponent$") then
+            native = name:gsub("^%S+%s+", "")
+            break
+        end
+        class = soft(function() return class:GetSuperStruct() end)
+    end
+    if native == nil then
+        trace_problem("wardrobe: PBZAppearanceComponent not found in the class chain, no preview hook")
+        return
+    end
+    for _, fn in ipairs({ "EquipOutfit", "ApplyOutfitVisual" }) do
+        local ok, err = pcall(RegisterHook, native .. ":" .. fn, function(context, id)
+            pcall(wardrobe.on_outfit_applied, fn, context, id)
+        end)
+        trace((ok and "wardrobe: hooked " or "wardrobe: hook FAILED ") .. native .. ":" .. fn ..
+            (ok and "" or (" " .. tostring(err))))
+    end
+end
+
+-- Writes the previewed outfit's text into the wardrobe panel. The panel widgets are found once per
+-- selection (a level-wide object walk, so only while one of our outfits is being previewed) and then
+-- re-set every scan; only visible panels are touched.
+function wardrobe.set_widget_text(widget, text, label)
+    if widget == nil or not valid(widget) then return false end
+    for _, fn in ipairs({ "SetDisplayText", "SetText" }) do
+        if soft(function() widget[fn](widget, FText(text)); return true end) then
+            if not wardrobe.reported then trace("wardrobe: " .. label .. " set with " .. fn) end
+            return true
+        end
+    end
+    return false
+end
+
+-- The outfit the wardrobe preview wears right now, read from its appearance component; falls back to the
+-- last hooked id while the component cannot be read (destroyed with the closed wardrobe, for instance).
+function wardrobe.previewed_outfit()
+    if wardrobe.comp == nil then return wardrobe.outfit end
+    local comp = usable(StaticFindObject(wardrobe.comp))
+    if comp == nil then
+        wardrobe.comp = nil
+        wardrobe.outfit = nil
+        return nil
+    end
+    local current = soft(function() return comp:GetCurrentOutfit():ToString() end)
+    if current ~= nil and current ~= "" and current ~= "None" then
+        if current ~= wardrobe.outfit then
+            trace("wardrobe: preview now wears " .. current)
+            wardrobe.outfit = current
+            wardrobe.text_tick = nil
+        end
+    end
+    return wardrobe.outfit
+end
+
+-- Our text may only replace an empty title or our own: the wardrobe writes the title of every game outfit
+-- itself, and that must never be overwritten. nil = the title could not be read (then the outfit check
+-- alone decides).
+function wardrobe.panel_title(panel)
+    local widget = soft(function() return panel.ItemNameText end)
+    if widget == nil then return nil end
+    return soft(function() return widget:GetText():ToString() end)
+end
+
+function wardrobe.wardrobe_text()
+    local texts = config.outfit_text
+    if type(texts) ~= "table" then return end
+    local outfit = wardrobe.previewed_outfit()
+    local text = outfit and texts[outfit] or nil
+    if text == nil then wardrobe.panels = nil return end
+    if wardrobe.panels == nil or wardrobe.text_tick == nil then
+        wardrobe.text_tick = state.tick
+        wardrobe.panels = {}
+        local objects = try("FindAllOf W_UnifiedTextDescription_C",
+            function() return FindAllOf("W_UnifiedTextDescription_C") end)
+        for _, panel in pairs(type(objects) == "table" and objects or {}) do
+            if usable(panel) and not is_cdo(panel) then
+                wardrobe.panels[#wardrobe.panels + 1] = full_name(panel)
+            end
+        end
+        trace("wardrobe: " .. #wardrobe.panels .. " text panel(s) for " .. wardrobe.outfit)
+    end
+    local written = 0
+    for _, key in ipairs(wardrobe.panels) do
+        local panel = usable(StaticFindObject(key))
+        local title = panel ~= nil and wardrobe.panel_title(panel) or nil
+        local free = title == nil or title == "" or title == (text.name or "")
+        if not free and not wardrobe.reported_busy then
+            wardrobe.reported_busy = true
+            trace("wardrobe: panel already shows '" .. tostring(title) .. "', not overwritten")
+        end
+        if panel ~= nil and free and soft(function() return panel:IsVisible() end) ~= false then
+            local name_ok = wardrobe.set_widget_text(soft(function() return panel.ItemNameText end), text.name or "", "title")
+            local desc_ok = wardrobe.set_widget_text(soft(function() return panel.DetailText end), text.desc or "", "description")
+            if name_ok or desc_ok then written = written + 1 end
+        end
+    end
+    if not wardrobe.reported then
+        wardrobe.reported = true
+        trace("wardrobe: text written to " .. written .. " panel(s)")
+    end
+end
+
+-- The wardrobe preview (BP_PreviewAppearance_Hun), handled the way the Ming garment collection's
+-- BPC_CollectionAttachedBody handles it - a mod that, like this one, ships the whole character as the
+-- outfit's MeshBand. Every scan the preview's parts are looked up by name (CharacterMesh0 = the body,
+-- meshhead, meshBand) and the decision is made from what they hold RIGHT NOW: our band on our body means
+-- the preview wears our outfit. On entering it the band's own state is saved and the band is made to
+-- retarget from the body (leader cleared, ticks after the body, post-process on, visible) while body and
+-- head are hidden; on leaving, everything saved is put back. The preview actor is found through the
+-- appearance component the wardrobe hook reported (no level walk).
+wardrobe.TICK_OPTIONS = { [0] = "AlwaysTickPoseAndRefreshBones", [1] = "AlwaysTickPose",
+    [2] = "OnlyTickMontagesWhenNotRendered", [3] = "OnlyTickPoseWhenRendered" }
+
+-- Recover when the preview was created before hooks were registered or a callback was missed.
+-- Do not guess if multiple preview actors are alive; the next hook identifies the active one.
+function wardrobe.find_preview_component()
+    if state.tick < (wardrobe.discovery_tick or 0) then return nil end
+    wardrobe.discovery_tick = state.tick + 4
+    local comps = try("FindAllOf BP_AppearanceComp_C for preview",
+        function() return FindAllOf("BP_AppearanceComp_C") end)
+    if type(comps) ~= "table" then return nil end
+    local found, count = nil, 0
+    for _, comp in pairs(comps) do
+        if usable(comp) and not is_cdo(comp) then
+            local owner = soft(function() return comp:GetOwner() end)
+            local name = owner and full_name(owner) or nil
+            if name ~= nil and name:find("BP_PreviewAppearance_Hun", 1, true) then
+                found, count = comp, count + 1
+            end
+        end
+    end
+    if count ~= 1 then return nil end
+    wardrobe.comp = full_name(found)
+    trace("wardrobe: preview component recovered " .. tostring(short_name(wardrobe.comp)))
+    return found
+end
+
+function wardrobe.preview_parts()
+    local comp = wardrobe.comp and usable(StaticFindObject(wardrobe.comp)) or nil
+    if comp == nil then comp = wardrobe.find_preview_component() end
+    if comp == nil then return nil end
+    local actor = soft(function() return comp:GetOwner() end)
+    local actor_name = actor and full_name(actor) or nil
+    if actor_name == nil then return nil end
+    local path = actor_name:gsub("^%S+%s+", "")
+    local function part(name)
+        local obj = usable(StaticFindObject(path .. "." .. name))
+        if obj ~= nil and full_name(soft(function() return obj:GetOwner() end)) ~= actor_name then obj = nil end
+        return obj
+    end
+    return { actor = actor_name, driver = part("CharacterMesh0"), head = part("meshhead"), band = part("meshBand") }
+end
+
+function wardrobe.release_preview(taken)
+    local driver = resolve_component(taken.driver)
+    local head = taken.head and resolve_component(taken.head) or nil
+    local band = resolve_component(taken.band)
+    if driver ~= nil then
+        if taken.tick ~= nil and wardrobe.TICK_OPTIONS[taken.tick] then
+            set_property(driver, "VisibilityBasedAnimTickOption", wardrobe.TICK_OPTIONS[taken.tick])
+        end
+        if taken.uro ~= nil then
+            set_property(driver, "bEnableUpdateRateOptimizations", taken.uro and "True" or "False")
+        end
+        -- The component may be invisible during asynchronous setup and shown by the game later.
+        -- Restore visibility whenever we actually hid it, even if it was invisible at takeover.
+        if taken.driver_visible or taken.driver_hidden_by_us then
+            try("preview body show", function() driver:SetVisibility(true, false) end)
+        end
+    end
+    if head ~= nil and (taken.head_visible or taken.head_hidden_by_us) then
+        try("preview head show", function() head:SetVisibility(true, false) end)
+    end
+    if band ~= nil then
+        if driver ~= nil then soft(function() band:RemoveTickPrerequisiteComponent(driver) end) end
+        -- only a band that still holds our mesh gets its own state back; one the wardrobe already filled
+        -- with a game part was set up by the wardrobe itself
+        if mesh_name(band) == config.carrier_mesh_name then
+            try("preview band pp", function() band:SetDisablePostProcessBlueprint(taken.pp == true) end)
+            try("preview band visibility", function() band:SetVisibility(taken.band_visible == true, false) end)
+            local lead = taken.lead and resolve_component(taken.lead) or nil
+            if lead ~= nil then try("preview band leader", function() band:SetLeaderPoseComponent(lead, true, true) end) end
+        end
+    end
+    trace_profile(string.format('{"event":"wardrobe_release","actor":%q,"body_hidden_by_mod":%s,"head_hidden_by_mod":%s}',
+        tostring(short_name(taken.actor)), tostring(taken.driver_hidden_by_us == true),
+        tostring(taken.head_hidden_by_us == true)))
+    trace("wardrobe: preview released (" .. tostring(short_name(taken.actor)) .. ")")
+end
+
+function wardrobe.take_preview(parts)
+    local band, driver, head = parts.band, parts.driver, parts.head
+    local lead = soft(function() return band.LeaderPoseComponent end)
+    local taken = {
+        actor = parts.actor, driver = full_name(driver), band = full_name(band),
+        head = head and full_name(head) or nil,
+        lead = (lead ~= nil and valid(lead)) and full_name(lead) or nil,
+        pp = soft(function() return band:GetDisablePostProcessBlueprint() end),
+        band_visible = soft(function() return band:IsVisible() end),
+        driver_visible = soft(function() return driver:IsVisible() end),
+        head_visible = head and soft(function() return head:IsVisible() end) or nil,
+        tick = soft(function() return driver.VisibilityBasedAnimTickOption end),
+        uro = soft(function() return driver.bEnableUpdateRateOptimizations end),
+    }
+    try("preview band leader clear", function() band:SetLeaderPoseComponent(nil, true, true) end)
+    soft(function() band:AddTickPrerequisiteComponent(driver) end)
+    try("preview band pp on", function() band:SetDisablePostProcessBlueprint(false) end)
+    try("preview band animation", function() band:SetEnableAnimation(true) end)
+    try("preview band tick", function() band:SetComponentTickEnabled(true) end)
+    force_anim_refresh(driver)
+    trace("wardrobe: preview taken over (" .. tostring(short_name(parts.actor)) .. ")")
+    return taken
+end
+
+function wardrobe.preview_tick()
+    local parts = wardrobe.preview_parts()
+    local ours = parts ~= nil and parts.band ~= nil and parts.driver ~= nil
+        and mesh_name(parts.band) == config.carrier_mesh_name
+        and matches_any(mesh_name(parts.driver), config.source_mesh_names)
+    local body_mesh = parts and parts.driver and mesh_name(parts.driver) or nil
+    local band_mesh = parts and parts.band and mesh_name(parts.band) or nil
+    local signature = tostring(parts and parts.actor) .. "|" .. tostring(body_mesh) .. "|" .. tostring(band_mesh)
+    if parts ~= nil and signature ~= wardrobe.mesh_signature then
+        wardrobe.mesh_signature = signature
+        trace_profile(string.format('{"event":"wardrobe_meshes","actor":%q,"body":%q,"band":%q}',
+            tostring(short_name(parts.actor)), tostring(body_mesh), tostring(band_mesh)))
+    end
+    local taken = wardrobe.preview
+    if taken ~= nil and (not ours or parts.actor ~= taken.actor or full_name(parts.band) ~= taken.band
+        or full_name(parts.driver) ~= taken.driver
+        or (parts.head and full_name(parts.head) or nil) ~= taken.head) then
+        wardrobe.release_preview(taken)
+        wardrobe.preview, taken = nil, nil
+    end
+    if not ours then return end
+    if taken == nil then
+        wardrobe.preview = wardrobe.take_preview(parts)
+        taken = wardrobe.preview
+    end
+    -- re-asserted every scan (cheap when already right): the wardrobe's own refreshes show the hidden
+    -- body / head and hide the band again
+    local band, driver, head = parts.band, parts.driver, parts.head
+    if soft(function() return band:IsVisible() end) == false then
+        try("preview band show", function() band:SetVisibility(true, false) end)
+        try("preview band unhide", function() band:SetHiddenInGame(false, false) end)
+    end
+    if soft(function() return driver:IsVisible() end) ~= false then
+        taken.driver_hidden_by_us = true
+        try("preview body hide", function() driver:SetVisibility(false, false) end)
+    end
+    if head ~= nil and soft(function() return head:IsVisible() end) ~= false then
+        taken.head_hidden_by_us = true
+        try("preview head hide", function() head:SetVisibility(false, false) end)
+    end
+    apply_own_materials(band, "preview own material")
+    guard_materials(band, "preview material")
+end
+
+-- An outfit of our own (config.unlock_outfits, rows added by the mod's outfit table container) is owned
+-- by nobody: the wardrobe would show it locked. The player's appearance component grants it once per
+-- session - the same UnlockOutfit the game calls for its own rewards, so it is stored in the save like
+-- them. Looked up by owner = the player's pawn; `FindAllOf` is a level-wide walk, so it is retried rarely
+-- and never again once every id is owned.
+function wardrobe.unlock_outfits()
+    local ids = config.unlock_outfits
+    if type(ids) ~= "table" or #ids == 0 or state.outfits_unlocked then return end
+    if state.tick < (state.unlock_next_tick or 0) then return end
+    state.unlock_next_tick = state.tick + (config.unlock_retry_scans or 20)
+    local pawn = resolve_player_pawn()
+    if pawn == nil then return end
+    local pawn_name = full_name(pawn)
+    local comps = try("FindAllOf BP_AppearanceComp_C",
+        function() return FindAllOf("BP_AppearanceComp_C") end)
+    if type(comps) ~= "table" then return end
+    for _, comp in pairs(comps) do
+        if usable(comp) and not is_cdo(comp) then
+            local owner = soft(function() return comp:GetOwner() end)
+            if owner ~= nil and full_name(owner) == pawn_name then
+                wardrobe.hook_wardrobe(comp)
+                local owned = 0
+                for _, id in ipairs(ids) do
+                    local name = FName(id)
+                    if try("IsOutfitOwned", function() return comp:IsOutfitOwned(name) end) == true then
+                        owned = owned + 1
+                    else
+                        try("UnlockOutfit", function() comp:UnlockOutfit(name) end)
+                        local now = try("IsOutfitOwned", function() return comp:IsOutfitOwned(name) end) == true
+                        if now then owned = owned + 1 end
+                        trace_problem("outfit: unlock " .. id .. (now and " ok" or " FAILED (not in the table?)"))
+                    end
+                end
+                state.unlock_failures = owned == #ids and 0 or (state.unlock_failures or 0) + 1
+                -- done, or the rows are not in the table (outfit container not installed): stop trying
+                if owned == #ids or state.unlock_failures >= 3 then state.outfits_unlocked = true end
+                return
+            end
+        end
+    end
+end
+
 local function scan()
     if not state.enabled then return end
     -- The scan counter advances HERE, not inside setup(): setup returns early while the hero is
@@ -4536,6 +5001,10 @@ local function scan()
         return
     end
     local phase_start = now_ms()
+    wardrobe.configure_transition()
+    wardrobe.unlock_outfits()
+    wardrobe.wardrobe_text()
+    wardrobe.preview_tick()
     drain_garments(config.garment_batch or 16)
     -- the player left the bound outfit: the carrier component is still there, but holds another mesh
     if state.actor_name ~= nil and state.carrier_name ~= nil and valid(state.carrier) then

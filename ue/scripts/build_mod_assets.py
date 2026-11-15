@@ -475,13 +475,16 @@ for i, m in enumerate(check):
     mi = m.get_editor_property("material_interface")
     log("  [%d] -> %s" % (i, mi.get_path_name() if mi else "None"))
 
-# The mesh the game renders is NOT this one: `build_carrier_mesh.py` imports the same FBX as
-# `/HuaShira/.../SkinParts/Hun_Head_New` and carries its own copy of the slot list. A slot change here
-# only reaches the game after that copy is rebuilt, and forgetting it is invisible in every log (the
-# cook happily ships the old carrier) - it cost a whole debugging round once: the corrected eye
-# material was in SK_Korinsna, the game kept rendering `MI_ZeroHun_Eye_01`.
-carrier = os.path.join(unreal.Paths.project_dir(), "Plugins", "HuaShira", "Content",
-                       "Characters", "Hero", "Hero_Hun", "SkinParts", "Hun_Head_New.uasset")
+# The mesh the game renders is NOT this one: `build_carrier_mesh.py` imports the same FBX at the carrier
+# path (PBZ_CARRIER_PATH, default `/HuaShira/.../SkinParts/Hun_Head_New`) and carries its own copy of the
+# slot list. A slot change here only reaches the game after that copy is rebuilt, and forgetting it is
+# invisible in every log (the cook happily ships the old carrier) - it cost a whole debugging round once:
+# the corrected eye material was in SK_Korinsna, the game kept rendering `MI_ZeroHun_Eye_01`.
+carrier_package = os.environ.get("PBZ_CARRIER_PATH") or "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
+carrier_root, carrier_rest = carrier_package.strip("/").split("/", 1)
+carrier = os.path.join(unreal.Paths.project_dir(),
+                       *(["Content"] if carrier_root == "Game" else ["Plugins", carrier_root, "Content"]),
+                       *(carrier_rest + ".uasset").split("/"))
 if os.path.exists(carrier) and os.path.getmtime(carrier) < STARTED_AT:
     log("WARNING carrier %s is older than this run - run build_carrier_mesh.py before cooking, "
         "otherwise the game keeps the previous slot assignment" % carrier)

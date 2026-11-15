@@ -33,7 +33,14 @@ DEFAULT_CARRIER = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
 # PBZ_CARRIER_PATH: ship the mesh as a different game part, e.g. the hair band only one outfit uses
 # (/HuaShira/Characters/Hero/Hero_Hun_FengXueDaoke/Cloth/Hun_FengXueDaoKe_Hair_Band). The shared head part
 # is then left alone, and a carrier an earlier build put there is deleted so it is not shipped again.
+# A path of our own (e.g. /Game/Korinsna/Outfit/SK_PBZ_Yae_Band) is not a game part at all: the outfit
+# container (outfit_table.py) adds a wardrobe outfit whose MeshBand row points at it.
 CARRIER = os.environ.get("PBZ_CARRIER_PATH") or DEFAULT_CARRIER
+# every carrier path a build has used; the ones that are not this build's are deleted before importing
+LEGACY_CARRIERS = (
+    DEFAULT_CARRIER,
+    "/HuaShira/Characters/Hero/Hero_Hun_FengXueDaoke/Cloth/Hun_FengXueDaoKe_Hair_Band",
+)
 DEST, NAME = CARRIER.rsplit("/", 1)
 SKELETON = "/Game/Korinsna/SK_Korinsna_Skeleton"
 ANIM_BP = "/Game/Korinsna/ABP_Korinsna_Retarget"
@@ -54,14 +61,15 @@ def main():
     if anim_bp is None:
         raise SystemExit("missing " + ANIM_BP + " (run build_retarget_assets.py first)")
 
-    if CARRIER != DEFAULT_CARRIER and EAL.does_asset_exist(DEFAULT_CARRIER):
-        stale = EAL.load_asset(DEFAULT_CARRIER)
+    # a carrier an earlier build left at another path would ship too and replace that game part
+    for stale_path in [p for p in LEGACY_CARRIERS if p != CARRIER and EAL.does_asset_exist(p)]:
+        stale = EAL.load_asset(stale_path)
         if stale is not None:
             EAL.delete_loaded_asset(stale)
             unreal.SystemLibrary.collect_garbage()
-        if EAL.does_asset_exist(DEFAULT_CARRIER):
-            raise SystemExit("could not delete the stale carrier " + DEFAULT_CARRIER)
-        log("removed the stale carrier at %s" % DEFAULT_CARRIER)
+        if EAL.does_asset_exist(stale_path):
+            raise SystemExit("could not delete the stale carrier " + stale_path)
+        log("removed the stale carrier at %s" % stale_path)
     if not EAL.does_directory_exist(DEST):
         EAL.make_directory(DEST)
 
