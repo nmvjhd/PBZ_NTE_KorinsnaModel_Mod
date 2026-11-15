@@ -10,7 +10,12 @@ to the placeholder map, which is what made the face black and the cloth muddy, s
 override below is imported as a VT (and the small helper maps are generated at 256px,
 one full VT tile).
 """
+import os
+import time
+
 import unreal
+
+STARTED_AT = time.time()
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
@@ -68,6 +73,21 @@ TEXTURES = [
 ]
 
 RESULT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-buildassets-result.txt"
+
+# Overrides an earlier version of this file created and that must never ship again. The cook stages
+# every asset that is on disk, whether or not this run imports it, so a removed override stays in the
+# pak until the project asset itself is deleted:
+#   * `T_ZeroHun_Eye_*` are the *refractive eyeball* inputs of `MI_ZeroHun_Eye_01`, an instance every
+#     other character's eyes share. Overriding them turned NPC eyes into the model's eye card (the
+#     "other NPCs have Korinsna's eyes" bug) and nothing in this mod samples them any more.
+#   * the two HeadMerged copies were imported into the wrong folder; the real paths are one level up.
+PRUNED = [
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_D"),
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_H"),
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Eye_AO"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_Detail_N"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_V02_SCMT"),
+]
 
 
 def log(msg):
@@ -127,6 +147,14 @@ def own_slot_of(host_name):
             return slot, host_name[len(base) + 1:]
     return None, None
 
+# ---------------------------------------------------------------- prune stale overrides
+# `delete_if_exists` only removes what this run is about to import; a path that dropped out of TEXTURES
+# leaves its project asset behind, and the cook ships it.
+for folder, name in PRUNED:
+    stale = "%s/%s" % (folder, name)
+    if EAL.does_asset_exist(stale):
+        delete_if_exists(stale)
+        log("pruned stale override %s" % stale)
 
 # ---------------------------------------------------------------- texture overrides
 for folder, name, tga, kind in TEXTURES:
@@ -332,4 +360,16 @@ log("assigned slots: %d" % len(check))
 for i, m in enumerate(check):
     mi = m.get_editor_property("material_interface")
     log("  [%d] -> %s" % (i, mi.get_path_name() if mi else "None"))
+
+# The mesh the game renders is NOT this one: `build_carrier_mesh.py` imports the same FBX as
+# `/HuaShira/.../SkinParts/Hun_Head_New` and carries its own copy of the slot list. A slot change here
+# only reaches the game after that copy is rebuilt, and forgetting it is invisible in every log (the
+# cook happily ships the old carrier) - it cost a whole debugging round once: the corrected eye
+# material was in SK_Korinsna, the game kept rendering `MI_ZeroHun_Eye_01`.
+carrier = os.path.join(unreal.Paths.project_dir(), "Plugins", "HuaShira", "Content",
+                       "Characters", "Hero", "Hero_Hun", "SkinParts", "Hun_Head_New.uasset")
+if os.path.exists(carrier) and os.path.getmtime(carrier) < STARTED_AT:
+    log("WARNING carrier %s is older than this run - run build_carrier_mesh.py before cooking, "
+        "otherwise the game keeps the previous slot assignment" % carrier)
+    print("WARNING: rebuild the carrier mesh (build_carrier_mesh.py) before cooking")
 log("done")

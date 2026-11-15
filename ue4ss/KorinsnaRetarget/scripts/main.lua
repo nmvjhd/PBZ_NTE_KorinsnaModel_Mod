@@ -163,6 +163,9 @@ local DEFAULTS = {
     report_ground_every = 0,
     -- diagnostic: log which material instance each slot renders with, once per hero
     report_materials = false,
+    -- diagnostic: one-shot dump of the material instances / textures this build ships (filtered), plus
+    -- each slot's parent material chain. Needed because the editor only holds placeholders.
+    report_material_catalog = false,
     -- Slots the game overwrites at runtime, mapped to the instance they must have. The hero's damage
     -- system replaces the head part's first slot with Hun_Status/MI_ZeroHun_Head_Injured*, and our
     -- mesh is that part, so the dress slot has to be put back (it otherwise renders as pale skin).
@@ -196,6 +199,16 @@ local DEFAULTS = {
     -- Scans between two rebuilds of the hero's part list (the one used to silence their shadow pass).
     -- The list only changes with the outfit, so this is a slow audit.
     quiet_parts_refresh = 120,
+
+    -- Dev only: step the eye slot through every matching hero material instance the running game has,
+    -- so the instance that shows the intended image can be found without a cook per guess.
+    -- F12 = next candidate, wrapping through the shipped assignment (index 0).
+    material_probe = false,
+    material_probe_key = "F12",
+    material_probe_slots = { 6 },
+    -- the hero's head slot is normally a plain `MI_ZeroHun_Head_*`; the damage-status variants used by
+    -- the build (`Head_health`, `Head_Injured30`) paint the eye card dark
+    material_probe_filter = "Head",
 
     -- Garment notifications are queued (see `adopt_garment`): how many of them one scan may read, and the
     -- queue cap. Both are small because these are rare classes; the cap only guards against a pathological
@@ -3282,7 +3295,164 @@ local function report_materials(component)
     for index = 0, count - 1 do
         local material = try("GetMaterial", function() return component:GetMaterial(index) end)
         trace(string.format("material[%d] %s", index, object_name(material)))
+        -- The parent chain is what decides the shader: an eye slot on a refractive master material
+        -- behaves nothing like a flat toon eye, and that is invisible from the instance name alone.
+        local node = material
+        for depth = 1, 4 do
+            local parent = node ~= nil and usable(soft(function() return node.Parent end)) or nil
+            if parent == nil then break end
+            trace(string.format("material[%d]   parent[%d] %s", index, depth, object_name(parent)))
+            node = parent
+        end
     end
+end
+
+-- Which material instances and textures this build of the game actually ships. The editor only holds
+-- the placeholder instances this project creates (the real ones live in the game's paks), so the catalog
+-- can only be read from inside a running game. Used to answer two questions that decide the eye fix:
+--   * which host instance the eye slot really is, and what its parent material is,
+--   * whether a spare hero-only albedo texture path exists for the eye (every slot needs its own, or two
+--     slots render the same image).
+-- Dev only: one-shot, filtered, and it walks the object array once.
+local CATALOG_KEYWORDS = { "eye", "cap", "cloth", "head", "face", "groom", "brow" }
+
+local function matches_catalog_keyword(name)
+    if name == nil then return false end
+    local lowered = name:lower()
+    for _, keyword in ipairs(CATALOG_KEYWORDS) do
+        if lowered:find(keyword, 1, true) then return true end
+    end
+    return false
+end
+
+local function report_material_catalog()
+    if not config.report_material_catalog then return end
+    local ok, err = pcall(function()
+        local instances = try("FindAllOf MaterialInstanceConstant",
+            function() return FindAllOf("MaterialInstanceConstant") end)
+        local listed = 0
+        if type(instances) == "table" then
+            for _, obj in pairs(instances) do
+                if usable(obj) and not is_cdo(obj) then
+                    local name = full_name(obj)
+                    if matches_catalog_keyword(name) then
+                        local parent = usable(soft(function() return obj.Parent end))
+                        trace(string.format("catalog MI  %s  parent=%s",
+                            tostring(full_name(obj)),
+                            parent ~= nil and object_name(parent) or "<none>"))
+                        listed = listed + 1
+                        if listed >= 120 then break end
+                    end
+                end
+            end
+        end
+        trace("catalog: " .. listed .. " material instance(s)")
+
+        local textures = try("FindAllOf Texture2D",
+            function() return FindAllOf("Texture2D") end)
+        local tex_listed = 0
+        if type(textures) == "table" then
+            for _, obj in pairs(textures) do
+                if usable(obj) and not is_cdo(obj) then
+                    local name = full_name(obj)
+                    if matches_catalog_keyword(name) then
+                        local x = tonumber(soft(function()
+                            return obj.Blueprint_GetSurfaceWidth() end) or 0) or 0
+                        local y = tonumber(soft(function()
+                            return obj.Blueprint_GetSurfaceHeight() end) or 0) or 0
+                        trace(string.format("catalog TEX %s  %dx%d", tostring(object_name(obj)), x, y))
+                        tex_listed = tex_listed + 1
+                        if tex_listed >= 160 then break end
+                    end
+                end
+            end
+        end
+        trace("catalog: " .. tex_listed .. " texture(s)")
+    end)
+    if not ok then trace("catalog: failed " .. tostring(err)) end
+end
+
+-- Which hero material instance samples which albedo texture cannot be read from Lua (the parameter
+-- arrays are not exposed), and the editor only holds this project's placeholders. So the instance is
+-- identified by eye instead: this steps a slot through every matching material instance the running game
+-- has, and the one that makes the slot show the intended image is the answer.
+--
+-- Background: the eye card renders correctly with the mapping in build_mod_assets.py (proved offline
+-- with tools/render_slot_preview.py - flat emission render of the mesh with the same slot->image map
+-- shows light-blue eyes), so what is left is the *instance*. The hero's head slot is normally driven by
+-- a plain `MI_ZeroHun_Head_*`; the two we tried are `Head_health` / `Head_Injured30`, both of which are
+-- the damage-status variants the game swaps in when the hero is hurt, so they paint the card dark.
+-- This probe finds the plain one by name and confirms it on screen. Dev only, hotkey driven.
+local material_probe = { index = 0, candidates = nil, original = nil, slots = {} }
+
+local function material_probe_candidates()
+    if material_probe.candidates ~= nil then return material_probe.candidates end
+    local list = {}
+    local filter = config.material_probe_filter
+    local instances = try("FindAllOf MaterialInstanceConstant",
+        function() return FindAllOf("MaterialInstanceConstant") end)
+    if type(instances) == "table" then
+        for _, obj in pairs(instances) do
+            if usable(obj) and not is_cdo(obj) then
+                local name = full_name(obj)
+                if name ~= nil and name:find("MI_ZeroHun_", 1, true)
+                    and (filter == nil or name:find(filter, 1, true)) then
+                    list[#list + 1] = obj
+                end
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        return tostring(full_name(a)) < tostring(full_name(b))
+    end)
+    material_probe.candidates = list
+    trace(string.format("probe: %d candidate(s) for filter %s", #list, tostring(filter)))
+    for index, obj in ipairs(list) do
+        trace(string.format("probe:   [%d] %s", index, tostring(full_name(obj))))
+    end
+    return list
+end
+
+-- Records what the mesh is wearing before the first probe step, so cycling wraps back to it. The
+-- originals are also logged: that line is the ground truth for which instance the build assigned.
+local function material_probe_capture(carrier, slots)
+    if material_probe.original ~= nil then return end
+    material_probe.slots = slots
+    material_probe.original = {}
+    for _, slot in ipairs(slots) do
+        local had = soft(function() return carrier:GetMaterial(slot) end)
+        material_probe.original[slot] = usable(had) and had or nil
+        trace(string.format("probe: slot %d originally %s", slot,
+            usable(had) and tostring(full_name(had)) or "<none>"))
+    end
+end
+
+local function material_probe_apply(index)
+    local list = material_probe_candidates()
+    if #list == 0 then
+        trace("probe: no candidates")
+        return
+    end
+    local carrier = state.body or state.carrier
+    if not valid(carrier) then
+        trace("probe: no carrier yet")
+        return
+    end
+    local slots = config.material_probe_slots or { 6 }
+    material_probe_capture(carrier, slots)
+    -- index 0 puts the shipped assignment back, so a wrap-around leaves no doubt about what "correct"
+    -- looked like; 1..#list walk the candidates in name order.
+    if index < 0 or index > #list then index = 0 end
+    material_probe.index = index
+    local material = index == 0 and nil or list[index]
+    for _, slot in ipairs(slots) do
+        local want = material or material_probe.original[slot]
+        if want ~= nil then
+            pcall(function() carrier:SetMaterial(slot, want) end)
+        end
+    end
+    trace(string.format("probe: slots %s -> %s  [%d/%d]", table.concat(slots, ","),
+        material ~= nil and tostring(full_name(material)) or "<shipped>", index, #list))
 end
 
 -- Last dotted/colon-separated part of an object or property name.
@@ -3762,6 +3932,13 @@ local function setup()
     if config.report_materials and state.aligned and not state.materials_reported and valid(target) then
         state.materials_reported = true
         report_materials(target)
+    end
+
+    -- Separate switch: the catalog is the only place the shipped build's instance names and parents can
+    -- be read (the editor only has placeholders), so it must not depend on the slot dump being on.
+    if config.report_material_catalog and state.aligned and not state.catalog_reported and valid(target) then
+        state.catalog_reported = true
+        report_material_catalog()
     end
 
     -- Every scan: the game re-applies its damage/status material on the part we ship, which silently
@@ -4440,6 +4617,21 @@ local function boot()
                         end
                     end)
                 end
+            end
+        end
+        if config.material_probe then
+            local probe_key = Key[config.material_probe_key or "F12"]
+            if probe_key then
+                pcall(RegisterKeyBind, probe_key, function()
+                    local step = function()
+                        material_probe_apply((material_probe.index or 0) + 1)
+                    end
+                    if type(ExecuteInGameThread) == "function" then
+                        ExecuteInGameThread(step)
+                    else
+                        step()
+                    end
+                end)
             end
         end
         if config.report_physics_frames and Key[config.physics_probe_key] then

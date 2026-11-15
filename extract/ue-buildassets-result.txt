@@ -4,8 +4,7 @@ texture albedo  /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_
 texture albedo  /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_Cloth_04_BC <- T_NPC_036_01_d
 texture albedo  /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_Cloth_05_BC <- T_Korinsna_White
 texture albedo  /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_Cap_V02_BC <- T_NPC_036_face_d
-texture albedo  /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/HeadMerged/T_ZeroHun_Head_D <- T_NPC_036_face_d
-texture albedo  /Game/Test/Zero_LookDev/ZeroFile/Character/Hun/Head/Textures/T_ZeroHun_Eye_D <- T_NPC_036_eyes_d
+texture albedo  /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/HeadMerged/T_ZeroHun_Head_D <- T_NPC_036_eyes_d
 texture mask    /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_Cloth_01_ARM <- T_Korinsna_ARM
 texture mask    /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_Cloth_02_ARM <- T_Korinsna_ARM
 texture mask    /Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/T_ZeroHun_Cloth_03_ARM <- T_Korinsna_ARM
@@ -28,7 +27,7 @@ assigned slots: 8
   [2] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/MI_ZeroHun_Cloth_03_b.MI_ZeroHun_Cloth_03_b
   [3] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/MI_ZeroHun_Cloth_01_b.MI_ZeroHun_Cloth_01_b
   [4] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/MI_ZeroHun_Cap_01_b.MI_ZeroHun_Cap_01_b
-  [5] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/Hun_Status/MI_ZeroHun_Head_Injured30.MI_ZeroHun_Head_Injured30
-  [6] -> /Game/PBZContent/Characters/Hero/Hun_New_V2/Material/MI_ZeroHun_Eye_01.MI_ZeroHun_Eye_01
-  [7] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/MI_ZeroHun_Cloth_05_b.MI_ZeroHun_Cloth_05_b
+  [5] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/MI_ZeroHun_Cap_01_b.MI_ZeroHun_Cap_01_b
+  [6] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/Hun_Status/MI_ZeroHun_Head_Injured30.MI_ZeroHun_Head_Injured30
+  [7] -> /Game/PBZContent/Characters/Hero/Hun_New_V2b/Material/Hun_Status/MI_ZeroHun_Head_Injured30.MI_ZeroHun_Head_Injured30
 done

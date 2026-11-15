@@ -93,6 +93,10 @@ Lua 侧随后只要 `StaticFindObject("/Game/Korinsna/ABP_Korinsna_Retarget.ABP_
 # 只重新打包（资产与 cook 结果已存在）
 & tools\build_all.ps1 -SkipAssets -SkipCook
 
+# 只改了材质槽 / 贴图覆盖（最常见）：必须连载体一起重建，否则游戏里看不到任何变化（§6.27）
+& tools\build_all.ps1 -SkipCpp
+# 等价的拆分写法：build_mod_assets.py -> build_carrier_mesh.py -> cook -> stage -> install
+
 # 换了绑定姿态 / 换了 .blend 之后：先重导 FBX，再跑 build_all（不带 -SkipAssets）
 & I:\Blender\blender.exe -b --python blender\scripts\export_korinsna_apose.py -- `
     KorinsnaModel\npc_036_APOSE.blend blender\out\Korinsna_APose.fbx 1.0
@@ -106,13 +110,15 @@ Lua 侧随后只要 `StaticFindObject("/Game/Korinsna/ABP_Korinsna_Retarget.ABP_
 | [ue/scripts/build_mod_assets.py](../ue/scripts/build_mod_assets.py) | 覆盖游戏贴图（必须 VT）+ 8 个材质槽占位 |
 | [ue/scripts/import_hun_preview.py](../ue/scripts/import_hun_preview.py) | 游戏骨架预览网格（仅编辑器） |
 | [ue/scripts/build_retarget_assets.py](../ue/scripts/build_retarget_assets.py) | `IKR_Hun` / `IKR_Korinsna` / `RTG_HunToKorinsna` / `ABP_Korinsna_Retarget` |
-| [ue/scripts/build_carrier_mesh.py](../ue/scripts/build_carrier_mesh.py) | 网格以 `SkinParts/Hun_Head_New` 打包并挂 post-process ABP |
+| [ue/scripts/build_carrier_mesh.py](../ue/scripts/build_carrier_mesh.py) | 网格以 `SkinParts/Hun_Head_New` 打包并挂 post-process ABP；**槽位表在这里另存一份，改槽位后必须重跑**（§6.27 ③） |
 | [ue/scripts/import_blank_parts.py](../ue/scripts/import_blank_parts.py) | 19 个部件网格 → 空白网格 |
 | [ue/scripts/blank_cloth_assets.py](../ue/scripts/blank_cloth_assets.py) | 7 个 `CA_Hun_*` → 空 ChaosClothAsset |
 | [ue/scripts/check_retarget_chain.py](../ue/scripts/check_retarget_chain.py) | 离线校验 AnimGraph 节点、骨架一致性、`FIKRetargetProcessor` 能否初始化 |
 | [ue/ProjectPBZ/Source/ProjectPBZ/KorinsnaEditorLibrary.cpp](../ue/ProjectPBZ/Source/ProjectPBZ/KorinsnaEditorLibrary.cpp) | 建 ABP（`FGraphNodeCreator` 只能在 C++ 里建图节点）、`SyncReferencePose` |
 | [tools/build_all.ps1](../tools/build_all.ps1) / [stage_iostore.ps1](../tools/stage_iostore.ps1) / [install_mod.ps1](../tools/install_mod.ps1) | 总装 / 裁剪+staging / 安装 |
 | [tools/make_neutral_textures.py](../tools/make_neutral_textures.py) | 生成中性辅助贴图（注意 §6.8 的通道顺序坑） |
+| [tools/dump_slot_uvs.py](../tools/dump_slot_uvs.py) | 只读（Blender）：每个材质槽的 UV 落在图集的哪一块（`extract/korinsna-slot-uvs.txt`） |
+| [tools/render_slot_preview.py](../tools/render_slot_preview.py) | 只读（Blender）：按当前「槽位→贴图」映射平铺渲染，判断「选对材质后应该长什么样」（§8.5） |
 | [tools/luacheck.py](../tools/luacheck.py) | Lua 静态语法检查（lupa） |
 | [tools/check_forward_refs.py](../tools/check_forward_refs.py) | 检测「先调用后声明」的 `local function`（见 §6.20） |
 | [tools/install_lua.ps1](../tools/install_lua.ps1) | 安装 Lua 半边的 **release / dev** 版本（只差日志与普查开关，见 §7.1） |
@@ -210,15 +216,26 @@ tex.set_editor_property("virtual_texture_streaming", True)   # 关键
 | --- | --- | --- | --- |
 | 0 | 连衣裙（含裙摆外层、靴饰） | `MI_ZeroHun_Cloth_04_b`（MAI_Cloth，纯底色） | `T_NPC_036_01_d`（`T_ZeroHun_Cloth_04_BC`） |
 | 1 | 皮肤（腿、手）+ 腰带花饰 | `MI_ZeroHun_Cloth_02_b`（MAI_Cloth） | `T_NPC_036_02_d`（`T_ZeroHun_Cloth_02_BC`） |
-| 2 | 前发 / 发饰 | `MI_ZeroHun_Cloth_03_b`（MAI_Equipment） | `T_NPC_036_hair_01_d` |
-| 3 | 后长发 | `MI_ZeroHun_Cloth_01_b`（MAI_Equipment_Mask） | `T_NPC_036_hair_02_d` |
-| 4 | 脸 | `MI_ZeroHun_Cap_01_b`（MAI_Equipment_Mask） | `T_NPC_036_face_d` |
-| 5 | 眉毛 | `MI_ZeroHun_Head_Injured30`（MAI_Skin） | `T_NPC_036_face_d` |
-| 6 | 眼睛 | `MI_ZeroHun_Eye_01`（MA_EyeRefractive） | `T_NPC_036_eyes_d` |
-| 7 | 高光小件 | `MI_ZeroHun_Cloth_05_b`（MAI_Cloth） | 纯白（`T_ZeroHun_Cloth_05_BC`） |
+| 2 | 前发 / 发饰 | `MI_ZeroHun_Cloth_03_b`（MAI_Equipment） | `T_NPC_036_hair_01_d`（`T_ZeroHun_Cloth_03_BC`） |
+| 3 | 后长发 | `MI_ZeroHun_Cloth_01_b`（MAI_Equipment_Mask） | `T_NPC_036_hair_02_d`（`T_ZeroHun_Cloth_01_BC`） |
+| 4 | 脸 | `MI_ZeroHun_Cap_01_b`（MAI_Equipment_Mask） | `T_NPC_036_face_d`（`T_ZeroHun_Cap_V02_BC`） |
+| 5 | 睫毛 / 眉毛 | `MI_ZeroHun_Cap_01_b`（同上，与脸共用图集） | `T_NPC_036_face_d`（同上） |
+| 6 | 眼睛 | `MI_ZeroHun_Head_Injured30`（MAI_Skin，普通 toon 底色） | `T_NPC_036_eyes_d`（`T_ZeroHun_Head_D`） |
+| 7 | 眼球重复壳（原模型的高光片，游戏里几乎不可见） | `MI_ZeroHun_Head_Injured30`（同上） | 同上 |
 
 头发和脸特意避开 `MAI_Cloth`（会叠加布料织纹细节法线）和 `MAI_Skin`（会叠加 SCMT 色图），
 这两个只留给面积很小、看不出来的部件。
+
+**槽 6 为什么不能再用 `MI_ZeroHun_Eye_01`**：它的父级是 `MA_EyeRefractive_02`（折射眼球），
+albedo 走的是 **iris 重映射 + iris 高度图**，把模型的双眼卡片塞进去只会得到「一小块偏右的、
+被黑色睫毛环包住的暗色」，这就是「眼睛很黑」的成因。模型自己的眼睛材质是普通 toon
+（`MI_NPC_036_eye`：Masked / MSM_Toon / BaseColor = 同一张双眼卡片），所以槽 6 改借 MAI_Skin 家族。
+槽 5 必须跟着脸走（同一张脸图集的 v 0.004..0.254 条带 = 睫毛/眉毛），否则它采到眼卡上的白色背景，
+表现为「白色睫毛」。
+
+一个槽一条独立 albedo 路径这条规则仍然成立：8 个槽只有 6 条可用路径 —— `Cloth_01/02/03/04_BC`、
+`Cap_V02_BC`、`Head_D`（`Cloth_05_BC` 只能显示 detail 层、`Eye_*` 被折射重映射），
+所以 **脸与睫毛共用 `Cap_V02_BC`、眼睛与高光壳共用 `Head_D`**。
 
 槽 0 / 槽 1 的实例是**可交换的**（两者都只有一个 albedo 贴图路径），要保证「一个槽一个独立贴图路径」。
 真正决定颜色对不对的不是这两个实例的差别，而是**游戏会不会在运行时把槽 0 换掉**——见 §6.18。
@@ -867,9 +884,65 @@ shadow: 0 part meshes on the hero
 表现就是**整局 mod 完全没生效**：原版衣服还在、可琳思娜不动、武器挂在魂身上。教训：
 
 - **计数器的自增不要放在「可能提前 return」的函数里**。现在在 `scan()` 的第一行自增。
-- 所有周期判断都依赖它，所以这类 bug 会一次性让「所有以轮为单位的机制」失效。
+- 所有周期判断都依赖它，所以这类 bug 会一次性让「以轮为单位的机制」全部失效。
 - `tools/smoke_lua.py` 的 `late` 世界专门复现它：先跑几轮空世界，再注入英雄，断言之后能找到。
   把自增移回 `setup()` 末尾，这个用例立刻失败（已验证）。
+
+### 6.27 眼睛发黑 / 白睫毛 / NPC 眼睛被改：三个坑叠在一起
+
+现象：可琳思娜的眼睛是**黑的**（原模型是浅蓝），睫毛是**白色**的，而且**别的 NPC 眼睛也变成了她的眼睛**。
+根因有三层，一层盖着一层，所以「改一次看起来没变化」：
+
+**① 眼睛槽借的是折射眼球材质（黑眼的直接原因）**
+`MI_ZeroHun_Eye_01` 的父级是 `MA_EyeRefractive_02`，albedo 走 iris 重映射 + iris 高度图 +
+MetaHuman 巩膜。把模型的**双眼卡片**塞进 `IrisBaseColor`，得到的是「一小块偏右的暗色块，外面一圈黑」。
+模型自己的眼睛材质是普通 toon（`MI_NPC_036_eye`：Masked / MSM_Toon / BaseColor = 同一张双眼卡片）。
+所以槽 6 改借 `MI_ZeroHun_Head_Injured30`（MAI_Skin，普通 toon 底色），眼卡放 `T_ZeroHun_Head_D`。
+> 反过来的教训：`MI_ZeroHun_Head_*` 是**受伤状态**实例（`Injured30/60/100`、`health`），名字暗示
+> 它们是血量状态，实测把它们套在眼睛上颜色正常（游戏平时只在槽 0 换血伤材质，见 §6.18），
+> 可以放心借。
+
+**② 我们覆盖的是共享贴图 → 别的 NPC 眼睛跟着变**
+`T_ZeroHun_Eye_D/H/AO` 是 `MI_ZeroHun_Eye_01` 的输入，而这个实例**所有**用折射眼球的角色都在用。
+一旦覆盖，所有 NPC 的眼睛都变成可琳思娜的。现在这三张**完全不覆盖**（`build_mod_assets.py`
+的 `PRUNED` 列表会主动删掉工程里的旧资产）。
+
+> **cook 会把工程里所有资产都打进包，不管这次有没有 import 它。** 把某个路径从 `TEXTURES` 里删掉，
+> 并不会让它停止被 ship —— 必须删工程资产（新加的 `PRUNED` 就是干这个的），或者删掉
+> `Saved/Cooked/...` 里的残留（stage 是从 cook 目录收集的）。
+
+**③ 载体网格的槽位表是副本，改 `SK_Korinsna` 游戏里看不到（花了整整一轮才发现）**
+游戏真正渲染的是 `build_carrier_mesh.py` 生成的 `/HuaShira/.../SkinParts/Hun_Head_New`，
+它从 `SK_Korinsna` **复制一份槽位表**存到自己资产里。所以：
+
+- 只跑 `build_mod_assets.py`（改的是 `SK_Korinsna`）+ cook，**贴图会更新、槽位不会**；
+- 表现为「换成普通 toon 材质后眼睛毫无变化」，而日志里 `material[6]` 仍然是旧的
+  `MI_ZeroHun_Eye_01`——直到把载体也重建才暴露。
+
+现在的约定与护栏：
+
+- 改 `SLOTS` 之后的正确顺序是 `build_mod_assets.py` → **`build_carrier_mesh.py`** → cook → stage；
+  最省事的做法是 `tools\build_all.ps1 -SkipCpp`（它会按依赖顺序把整条链跑一遍）。
+- `build_mod_assets.py` 结尾会检查载体的 mtime，早于本次运行就写
+  `WARNING carrier ... is older than this run`（只看 `extract\ue-buildassets-result.txt` 就能发现）。
+- 想确认包里到底是哪套槽位：直接在 cooked 产物里数实例名
+  （`python -c "d=open(r'...\Hun_Head_New.uasset','rb').read(); print(d.count(b'MI_ZeroHun_Eye_01'))"`），
+  或者装 dev 版看 `material[6]` 那一行。
+
+#### 怎么在**不 cook** 的前提下定位「哪个槽 / 哪个实例」
+
+| 手段 | 回答什么 | 用法 |
+| --- | --- | --- |
+| [tools/dump_slot_uvs.py](../tools/dump_slot_uvs.py) | 每个槽的 UV 落在图集的哪一块 | Blender 后台跑，读 `extract/korinsna-slot-uvs.txt` |
+| [tools/render_slot_preview.py](../tools/render_slot_preview.py) | 按当前「槽位→贴图」映射**平铺渲染**出来长什么样 | `blender.exe --background KorinsnaModel\npc_036_APOSE.blend --python tools\render_slot_preview.py -- out.png [hide7\|white7\|card7]` |
+| dev 的 `report_materials` | 游戏里每个槽**实际**是哪个实例（含父级链） | `material[6] MI_ZeroHun_Eye_01` / `parent[1] MA_EyeRefractive_02` |
+| dev 的 `report_material_catalog` | 运行中的游戏里有哪些 `MI_ZeroHun_*`/贴图（编辑器里只有占位符） | 接管英雄后一次性打印完整路径 |
+| dev 的 `material_probe`（**F12**） | 把槽 6 逐个换成候选实例，**用眼睛**挑出正确的那个 | 每按一次换下一个，日志 `probe: slots 6 -> <完整路径> [i/n]`；转一圈回到出厂的 index 0 |
+
+本轮就是靠「平铺渲染证明 UV/贴图映射正确 → 只剩实例问题 → F12 一次定位到 `Head_Injured100` 颜色正确」
+三步收敛的，没有出现「猜一次 cook 一次」的循环。`render_slot_preview.py` 的三种变体用来验证
+「槽 7 是眼球重复壳」这个判断：`hide7`（删掉壳）、`card7`（壳采样眼卡）、`white7`（壳涂白）
+三张图**完全一样**，说明从这个角度看壳根本不可见，白色睫毛不是它造成的。
 
 ---
 
@@ -946,6 +1019,8 @@ shadow: 0 part meshes on the hero
 | `report_pose_window` | `false` | 打印看门狗自身视角的计数（排障，§8.6） |
 | `material_guard` | `[0] = ".../MI_ZeroHun_Cloth_04_b"` | 被游戏换掉的材质槽，每轮把目标实例换回去，见 §6.18 |
 | `report_materials` | `false` | 打印 8 个槽实际使用的材质实例名（排障，见 §6.18） |
+| `report_material_catalog` | `false` | 一次性打印运行中游戏里的 `MI_ZeroHun_*` 完整路径与父级、以及相关贴图（编辑器里只有占位符，见 §6.27） |
+| `material_probe` | `false` | **F12** 把槽 6 逐个换成候选材质实例（`material_probe_slots` / `material_probe_filter` 可调），用眼睛挑出正确的那个，见 §6.27 |
 | `rescan_interval` | `0.5` | 扫描周期（秒） |
 | `probe_only` | `false` | 只观察、不改动 |
 | `report_weapon_geometry` / `report_weapon_chain` | `false` | 武器几何普查 / 挂接链变化记录（排障，**开销大**） |
@@ -989,12 +1064,23 @@ material[0] was MID_MI_ZeroHun_Head_Injured30_2147474746 -> restored ...
 ```
 
 - 槽里出现 `MID_...` 且父级不是我们指定的实例 → 游戏在运行时换了材质（§6.18）；
-- `material: slot N was ... -> restored ...` 是守卫生效的那一行，正常情况下**只会出现一次**。
+- `material: slot N was ... -> restored ...` 是守卫生效的那一行，正常情况下**只会出现一次**；
+- **这一行也是「发包里的槽位表到底是哪一版」的唯一证据**：它读的是游戏真正在渲染的载体网格
+  `Hun_Head_New`。`SK_Korinsna` 改了而这里没变，就是载体没重建（§6.27 ③）。
 
 ### 8.5 判断「贴图和 UV 对不对」（不用进游戏）
 
-Blender 里按多边形 UV 采样 tga，或者直接给每个材质槽套一个「贴图 → Emission」的平面材质渲染一张，
-和参考图对照即可。这条比在游戏里反复换材质快得多，也是这次排除「褪色是贴图/UV 问题」的方法（§6.18）。
+[tools/render_slot_preview.py](../tools/render_slot_preview.py) 按 `build_mod_assets.py` 里当前的
+「槽位 → 贴图」映射，用**平铺 emission 材质**把模型渲染出来（完全不看光照/材质实例）：
+
+```powershell
+I:\Blender\blender.exe --background KorinsnaModel\npc_036_APOSE.blend `
+  --python tools\render_slot_preview.py -- docs\img\preview.png hide7
+```
+
+看 `docs/img/preview_front.png` 就知道「如果材质实例选对了，游戏里应该长什么样」。
+这条比在游戏里反复换材质快得多，也是这次把问题范围收敛到「只剩实例」的关键一步（§6.27）。
+`hide7` / `card7` / `white7` 三个变体用来判断某个槽的几何到底可不可见。
 
 ### 8.6 判断「姿势看门狗为什么不动」
 
@@ -1085,6 +1171,7 @@ ground: pelvis src -1240.1 ours -1189.4 (+50.7) | foot src -1282.7 ours -1219.9 
 | 衣服质感 | 中性 ARM：全粗糙、非金属 | 想要一点高光时把 `_ARM` 的 G 改成 180（参考 2B mod 的值） |
 | 皮肤颜色 | 可琳思娜的腿/手本来就接近白色，槽 1 借的 `Cloth_02_b` 会再混一点布料噪点 | 想更干净时把槽 1 也换成纯底色实例（要同时换它唯一的 albedo 贴图路径） |
 | 游戏换材质 | 只守住槽 0（受伤头材质），玩家与过场副本都守（§6.18 / §6.21） | 若别的槽也被换掉，往 `material_guard` 里加条目 |
+| 眼睛 / 睫毛 | 眼卡走 `MI_ZeroHun_Head_Injured30`（普通 toon）、睫毛与脸共用 `Cap_01_b`，共享的 `T_ZeroHun_Eye_*` 不再覆盖（§6.27） | 若想要模型原版的高光/视差效果，需要把眼睛槽指向模型自己的 `MI_NPC_036_eye`（在游戏包里，但路径未记录） |
 | 跨扫描缓存 | 只存对象名，用前 `StaticFindObject` 重新解析（§6.22） | 若有新的缓存需求，沿用这个模式，不要保存 UObject 引用 |
 | 运行期开销 | 事件驱动缓存（§12）：监听回调只入队，全关卡扫描只剩换图/接管各一次 + 10s 一次的武器兜底 + 布料两类 | 若还有周期性卡顿，用 dev 的 `profile:` 行区分「脚本慢」和「引擎卡」 |
 | 姿势恢复 | 直接读 `LeaderPoseComponent`，下一轮即恢复（§6.17） | 若某天该属性读不到，`pose_bone_fallback` 仍会兜底（慢 ~2 秒） |
