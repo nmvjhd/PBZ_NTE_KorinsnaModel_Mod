@@ -186,7 +186,7 @@ local DEFAULTS = {
     dump_census = false,
 
     toggle_key = "F9",
-    diagnostics_key = "F11",
+    diagnostics_key = "HOME",  -- not F11: the game toggles fullscreen on it
     rescan_interval = 0.5,
 
     -- Dev only: measure how long a scan takes, and report a stall (the game thread was busy before the
@@ -942,8 +942,6 @@ local function remember_hidden(component, label)
         local before = {}
         pcall(function() before.visible = component:IsVisible() end)
         pcall(function() before.hidden_in_game = component.bHiddenInGame end)
-        pcall(function() before.main_pass = component.bRenderInMainPass end)
-        pcall(function() before.cast_shadow = component.CastShadow end)
         state.hidden_before[key] = before
     end
     apply_hide(component)
@@ -1486,7 +1484,7 @@ local function watch_pose(target)
     end
 end
 -- Diagnostics only: every line is a file write, and this runs on every hero (re)build, so it is
--- logged at the verbose level. The same dump is behind the F11 key.
+-- logged at the verbose level. The same dump is behind the diagnostics key (config.diagnostics_key).
 local function dump_component(component, tag)
     if not valid(component) then
         trace2(string.format("%s: <stale>", tag))
@@ -2634,6 +2632,64 @@ local function guard_materials(component, label)
     end
 end
 
+-- A carrier component that now holds a game part again: every slot that still renders a material this
+-- script put there (an own dynamic instance, or a `material_guard` instance) gets the new mesh's own
+-- material for that slot back. `EmptyOverrideMaterials` would be the one-call way, but it cannot be called
+-- from Lua in this build ("attempt to call a TrivialObject value"). Returns true when a slot was reset.
+local function remove_our_materials(obj, key)
+    -- slot -> names of the materials this script wrote there
+    local ours = {}
+    local instances = state.own_instances and state.own_instances[key] or nil
+    for index, instance in pairs(instances or {}) do
+        local name = valid(instance) and full_name(instance) or nil
+        if name ~= nil then ours[index] = { [name] = true } end
+    end
+    for index, path in pairs(type(config.material_guard) == "table" and config.material_guard or {}) do
+        local want = resolve_material(path)
+        local name = want ~= nil and full_name(want) or nil
+        if name ~= nil then
+            ours[index] = ours[index] or {}
+            ours[index][name] = true
+        end
+    end
+    local defaults = {}
+    pcall(function()
+        local slot = 0
+        obj:GetSkeletalMeshAsset().Materials:ForEach(function(_, element)
+            local material = nil
+            pcall(function() material = element:get().MaterialInterface end)
+            defaults[slot] = material
+            slot = slot + 1
+        end)
+    end)
+    local reset = false
+    for index, names in pairs(ours) do
+        local have = soft(function() return obj:GetMaterial(index) end)
+        local name = (have ~= nil and valid(have)) and full_name(have) or nil
+        local default = defaults[index]
+        if name ~= nil and names[name] and default ~= nil and valid(default) then
+            reset = true
+            try("carrier material reset", function() obj:SetMaterial(index, default) end)
+        end
+    end
+    if state.own_instances then state.own_instances[key] = nil end
+    return reset
+end
+
+-- A hero copy's part that carried our mesh and now holds a game part again (the wardrobe preview or a
+-- cutscene copy changed outfit; it is the same component with another mesh). What this script did to it
+-- as a carrier is undone: our materials go, and it follows its attach parent (the copy's body) again
+-- instead of standing in its reference pose with the leader pose we cleared.
+local function release_copy_carrier(obj, key)
+    local reset = remove_our_materials(obj, key)
+    local parent = soft(function() return obj:GetAttachParent() end)
+    if parent ~= nil and valid(parent) then
+        try("copy leader pose restore", function() obj:SetLeaderPoseComponent(parent, true, true) end)
+    end
+    trace("copy: " .. tostring(short_name(key)) .. " holds " .. tostring(mesh_name(obj)) ..
+        " again; follows its parent" .. (reset and ", our materials removed" or ""))
+end
+
 -- Re-resolve a cached component by its object name.
 --
 -- A cached UObject wrapper outlives the object: the cutscene copies are created and destroyed
@@ -2689,9 +2745,6 @@ end
 -- notification - a class registered twice - harmless).
 local function add_copy_entry(obj, class_name, owner_name)
     if obj == nil then return false end
-    -- the wardrobe preview has its own handler (wardrobe.preview_tick): the generic copy hiding, built for
-    -- cutscene copies, lost track of it while the wardrobe loaded an outfit asynchronously
-    if owner_name ~= nil and owner_name:find("BP_PreviewAppearance", 1, true) then return false end
     local key = full_name(obj)
     if key == nil or key == state.carrier_name then return false end
     state.copy_list = state.copy_list or {}
@@ -2762,43 +2815,6 @@ local function apply_copy_hiding()
     if list == nil then return end
     state.copy_hidden = state.copy_hidden or {}
     state.copy_leader = state.copy_leader or {}
-
-    -- Live classification. The wardrobe preview changes outfit while it stays the same actor with the same
-    -- components, and the new meshes arrive asynchronously - later than any one-off rebuild can be timed
-    -- (in game: a rebuild right after the switch saw the old meshes, hid the incoming 风雪 parts for a few
-    -- seconds, and a switch to our outfit was sometimes never noticed). So every scan each known copy
-    -- component is checked for what it holds NOW: one that took our mesh becomes a carrier, a carrier that
-    -- got a game part back is an ordinary part again. Only the copies' own few components are touched.
-    local carriers_now, list_now = {}, {}
-    for index = 1, #list do
-        local entry = list[index]
-        local obj = resolve_component(entry.key)
-        local held = obj ~= nil and mesh_name(obj) or nil
-        if held == config.carrier_mesh_name then
-            carriers_now[#carriers_now + 1] = entry.key
-            if state.copy_index then state.copy_index[entry.key] = "carrier" end
-            state.copy_hidden[entry.key] = nil
-            trace("copy: " .. tostring(short_name(entry.key)) .. " now carries our mesh")
-        else
-            if obj ~= nil then entry.mesh = held end
-            list_now[#list_now + 1] = entry
-        end
-    end
-    for _, key in ipairs(state.copy_carriers or {}) do
-        local obj = resolve_component(key)
-        if obj ~= nil and mesh_name(obj) ~= config.carrier_mesh_name then
-            local class = soft(function() return obj:GetClass() end)
-            local owner_name = full_name(soft(function() return obj:GetOwner() end))
-            list_now[#list_now + 1] = copy_component_entry(obj, class and short_name(full_name(class)) or nil,
-                owner_name)
-            if state.copy_index then state.copy_index[key] = "hide" end
-            trace("copy: " .. tostring(short_name(key)) .. " holds a game part again")
-        else
-            carriers_now[#carriers_now + 1] = key
-        end
-    end
-    state.copy_list, state.copy_carriers = list_now, carriers_now
-    list = list_now
 
     -- Which copies actually wear the outfit this mod is bound to: only those carry our mesh, and only
     -- their original outfit may be hidden. A copy in any other outfit (the appearance preview while
@@ -2886,7 +2902,12 @@ local function apply_copy_hiding()
     local alive_carriers = {}
     for index = 1, #carriers do
         local obj = resolve_component(carriers[index])
-        if obj ~= nil then
+        if obj ~= nil and mesh_name(obj) ~= config.carrier_mesh_name then
+            -- no longer ours: undo once and stop treating it as a carrier
+            release_copy_carrier(obj, carriers[index])
+            state.copy_leader[carriers[index]] = nil
+            if state.copy_index then state.copy_index[carriers[index]] = nil end
+        elseif obj ~= nil then
             alive_carriers[#alive_carriers + 1] = carriers[index]
             local key = carriers[index]
             if key ~= state.carrier_name and not state.copy_leader[key] then
@@ -2899,13 +2920,6 @@ local function apply_copy_hiding()
                 try("copy keep ticking", function() obj:SetComponentTickEnabled(true) end)
                 trace("copy: made " .. tostring(short_name(key)) .. " evaluate the retarget")
             end
-            -- the wardrobe preview keeps its MeshBand component hidden (it has no band to show); ours
-            -- is the whole character there
-            if soft(function() return obj:IsVisible() end) == false then
-                try("copy carrier SetVisibility", function() obj:SetVisibility(true, false) end)
-                try("copy carrier SetHiddenInGame", function() obj:SetHiddenInGame(false, false) end)
-                trace("copy: showed the hidden carrier " .. tostring(short_name(key)))
-            end
             apply_own_materials(obj, "copy own material")
             guard_materials(obj, "copy material")
         elseif state.copy_index then
@@ -2913,26 +2927,6 @@ local function apply_copy_hiding()
         end
     end
     state.copy_carriers = alive_carriers
-
-    -- A component that carried our mesh and now holds a game part again (the preview switched to another
-    -- outfit): its leader pose was cleared above, so it would stand in the reference pose. It follows its
-    -- attach parent (the copy's body) again.
-    local carrying = {}
-    for _, key in ipairs(alive_carriers) do carrying[key] = true end
-    for key in pairs(state.copy_leader) do
-        if not carrying[key] then
-            state.copy_leader[key] = nil
-            local obj = resolve_component(key)
-            if obj ~= nil and mesh_name(obj) ~= config.carrier_mesh_name then
-                local parent = soft(function() return obj:GetAttachParent() end)
-                if parent ~= nil and valid(parent) then
-                    try("copy leader pose restore",
-                        function() obj:SetLeaderPoseComponent(parent, true, true) end)
-                    trace("copy: " .. tostring(short_name(key)) .. " follows its parent again")
-                end
-            end
-        end
-    end
 end
 
 -- Rare: the Chaos Cloth garments and hair grooms on any hero (the wardrobe has variants whose assets
@@ -3033,15 +3027,9 @@ local function sweep_other_heroes()
     local need_copies = want_copies
         and (state.copy_list == nil or state.copy_dirty == true)
     local need_cloth = want_cloth and state.cloth_list == nil
-    -- the wardrobe just changed the preview's outfit (see `on_outfit_applied`): rebuild on this scan, the
-    -- player is looking at the preview and a two-second wait shows him the original outfit first
-    local allowed = since_last >= (config.copy_rescan_min_scans or 4) or state.copy_force == true
-    if state.copy_force and need_copies then
-        need_cloth = want_cloth   -- the preview's garments changed together with its parts
-    end
+    local allowed = since_last >= (config.copy_rescan_min_scans or 4)
     if (need_copies or need_cloth) and allowed then
         state.copy_dirty = false
-        state.copy_force = false
         state.copy_scan_tick = state.tick
         if need_copies then
             collect_copy_components()
@@ -4325,6 +4313,54 @@ local function hide_shared_parts()
     end
 end
 
+-- Read-only diagnostic: the render flags of every skeletal part on the player pawn, which pose it follows
+-- and what each slot renders with. A part that is visible but out of the main pass renders as a solid
+-- black silhouette (the black face after leaving our outfit, fixed in release_outfit). The diagnostics key
+-- logs every part; `problems_only` logs just such parts. Problem lines, so they show at every log level.
+local render_check_tick = nil
+
+local function report_hero_render(tag, problems_only)
+    local pawn = resolve_player_pawn()
+    local pawn_name = pawn ~= nil and full_name(pawn) or nil
+    if not problems_only then
+        trace_problem(string.format("render[%s]: pawn=%s mod_actor=%s carrier=%s", tostring(tag),
+            tostring(short_name(pawn_name)), tostring(short_name(state.actor_name)),
+            tostring(short_name(state.carrier_name))))
+    end
+    if pawn_name == nil then return end
+    local objects = soft(function() return FindAllOf("SkeletalMeshComponent") end)
+    if type(objects) ~= "table" then return end
+    for _, obj in pairs(objects) do
+        if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, pawn_name) then
+            local function flag(read)
+                local value = soft(read)
+                if value == nil then return "?" end
+                return tostring(value)
+            end
+            local black = soft(function() return obj:IsVisible() end) == true
+                and soft(function() return obj.bRenderInMainPass end) == false
+            if problems_only and not black then goto continue end
+            local leader = soft(function() return obj.LeaderPoseComponent end)
+            local leader_name = (leader ~= nil and valid(leader)) and short_name(full_name(leader)) or "none"
+            trace_problem(string.format(
+                "render[%s]: %s mesh=%s visible=%s hiddenInGame=%s mainPass=%s depthPass=%s shadow=%s leader=%s",
+                tostring(tag), tostring(short_name(full_name(obj))), tostring(part_mesh_name(obj)),
+                flag(function() return obj:IsVisible() end), flag(function() return obj.bHiddenInGame end),
+                flag(function() return obj.bRenderInMainPass end), flag(function() return obj.bRenderInDepthPass end),
+                flag(function() return obj.CastShadow end), tostring(leader_name)))
+            for index = 0, 7 do
+                local material = soft(function() return obj:GetMaterial(index) end)
+                if material == nil or not valid(material) then break end
+                local parent = soft(function() return material.Parent end)
+                trace_problem(string.format("render[%s]:     mat[%d] %s parent=%s", tostring(tag), index,
+                    tostring(short_name(full_name(material))),
+                    tostring((parent ~= nil and valid(parent)) and short_name(full_name(parent)) or "-")))
+            end
+        end
+        ::continue::
+    end
+end
+
 -- The mod is bound to ONE outfit: its mesh ships as a part only that outfit uses (config.carrier_mesh_name),
 -- and the hero is only adopted while his body is that outfit's body (config.source_mesh_names). When the
 -- player changes outfit in the game's own appearance menu, the same components simply get other meshes -
@@ -4363,8 +4399,12 @@ local function release_outfit(reason)
                 local was = key ~= nil and before[key] or nil
                 local mesh = part_mesh_name(obj)
                 if mesh == nil or not is_weapon_component(obj, mesh) then
-                    pcall(function() obj:SetRenderInMainPass(was == nil or was.main_pass ~= false) end)
-                    pcall(function() obj:SetCastShadow(was == nil or was.cast_shadow ~= false) end)
+                    -- Main pass and shadow are always switched back on, never taken from the record: the
+                    -- game itself does not use them, and `quiet_blank_parts` often turns them off before
+                    -- `hide_shared_parts` records a part - the head and the brow / lash card then came
+                    -- back visible but out of the main pass, a solid black face (2.1.8-2.1.10).
+                    pcall(function() obj:SetRenderInMainPass(true) end)
+                    pcall(function() obj:SetCastShadow(true) end)
                     if was ~= nil then
                         pcall(function() obj:SetHiddenInGame(was.hidden_in_game == true, false) end)
                         pcall(function() obj:SetVisibility(was.visible ~= false, false) end)
@@ -4397,7 +4437,7 @@ local function release_outfit(reason)
 
     -- the part that carried our mesh is an ordinary follower of the body again, without our materials
     if valid(carrier) then
-        pcall(function() carrier:EmptyOverrideMaterials() end)
+        remove_our_materials(carrier, full_name(carrier))
         if valid(source) then
             pcall(function() carrier:SetLeaderPoseComponent(source, true, true) end)
         end
@@ -4596,58 +4636,12 @@ end
 
 -- The wardrobe (W_Appearance_V2) shows an outfit on a preview actor (BP_PreviewAppearance_Hun), which is a
 -- hero copy, and writes the outfit's title and description itself - but only for the game's own outfits:
--- for a row the mod added the panel stays empty. Both are handled from one signal, a hook on the native
--- appearance component's EquipOutfit / ApplyOutfitVisual, which the wardrobe calls whenever the preview
--- changes:
---   * the copy lists are rebuilt on the next scan (`copy_force`): an outfit of our own has no Chaos Cloth,
---     so no garment spawns to announce the preview, and it would keep the original hero's look;
---   * while the previewed outfit is one of `config.outfit_text`, its title / description are written into
---     the panel's W_UnifiedTextDescription (ItemNameText / DetailText) every scan, because the wardrobe
---     clears them again on its own refreshes.
+-- for a row the mod added the panel stays empty. A hook on the native appearance component's EquipOutfit /
+-- ApplyOutfitVisual (the wardrobe calls them whenever the preview changes) reports the preview's
+-- appearance component; while the previewed outfit is one of `config.outfit_text`, its title /
+-- description are written into the panel's W_UnifiedTextDescription (ItemNameText / DetailText) every
+-- scan, because the wardrobe clears them again on its own refreshes.
 local wardrobe = { hooked = false, outfit = nil, text_tick = nil, panels = nil }
-
--- The game's wardrobe reads this CVar once when it opens. Its dissolve progress can stall
--- on a full-character carrier, causing a 2 s effect + 10 s timeout before the first swap.
--- Use the game's supported direct-preview mode, only for characters that opt in. The CVar is
--- process-local and resets when the game exits; it affects all wardrobe previews for the session.
-function wardrobe.configure_transition()
-    if not config.preview_direct_switch or wardrobe.direct_ready then return end
-    if state.tick < (wardrobe.direct_retry_tick or 0) then return end
-    wardrobe.direct_retry_tick = state.tick + 4
-    local library = usable(StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"))
-    if library == nil then return end
-    local cvar = "PBZ.AppearancePreview.DissolveTransition"
-    local ok, before = pcall(function() return library:GetConsoleVariableBoolValue(cvar) end)
-    if not ok or type(before) ~= "boolean" then
-        if not wardrobe.direct_read_failed then
-            wardrobe.direct_read_failed = true
-            trace_problem('{"event":"wardrobe_direct_preview","result":"read_failed"}')
-        end
-        return
-    end
-    if before then
-        local controllers = try("FindAllOf PlayerController for preview",
-            function() return FindAllOf("PlayerController") end)
-        if type(controllers) ~= "table" then return end
-        local sent = false
-        for _, controller in pairs(controllers) do
-            if usable(controller) and not is_cdo(controller) then
-                sent = pcall(function() controller:ConsoleCommand("PBZ.AppearancePreview.DissolveTransition 0") end)
-                if sent then break end
-            end
-        end
-        if not sent then return end
-    end
-    local verified, after = pcall(function() return library:GetConsoleVariableBoolValue(cvar) end)
-    if verified and after == false then
-        wardrobe.direct_ready = true
-        trace_profile(string.format('{"event":"wardrobe_direct_preview","result":"enabled","previous":%s}',
-            tostring(before)))
-    elseif not wardrobe.direct_set_failed then
-        wardrobe.direct_set_failed = true
-        trace_problem('{"event":"wardrobe_direct_preview","result":"verification_failed"}')
-    end
-end
 
 function wardrobe.outfit_name_of(param)
     local value = soft(function() return param:get() end)
@@ -4666,7 +4660,6 @@ function wardrobe.on_outfit_applied(kind, context, id)
         -- remembered so `previewed_outfit` can ask the preview itself every scan: the hook alone missed
         -- the switch back to a game outfit in game (the panel kept our title on 风雪)
         wardrobe.comp = full_name(comp)
-        wardrobe.mesh_signature = nil
         trace_profile(string.format('{"event":"wardrobe_request","kind":%q,"outfit":%q,"actor":%q}',
             kind, tostring(outfit), tostring(short_name(owner_name))))
         trace("wardrobe: " .. kind .. " " .. tostring(outfit) .. " on " .. tostring(short_name(owner_name)))
@@ -4784,162 +4777,6 @@ function wardrobe.wardrobe_text()
     end
 end
 
--- The wardrobe preview (BP_PreviewAppearance_Hun), handled the way the Ming garment collection's
--- BPC_CollectionAttachedBody handles it - a mod that, like this one, ships the whole character as the
--- outfit's MeshBand. Every scan the preview's parts are looked up by name (CharacterMesh0 = the body,
--- meshhead, meshBand) and the decision is made from what they hold RIGHT NOW: our band on our body means
--- the preview wears our outfit. On entering it the band's own state is saved and the band is made to
--- retarget from the body (leader cleared, ticks after the body, post-process on, visible) while body and
--- head are hidden; on leaving, everything saved is put back. The preview actor is found through the
--- appearance component the wardrobe hook reported (no level walk).
-wardrobe.TICK_OPTIONS = { [0] = "AlwaysTickPoseAndRefreshBones", [1] = "AlwaysTickPose",
-    [2] = "OnlyTickMontagesWhenNotRendered", [3] = "OnlyTickPoseWhenRendered" }
-
--- Recover when the preview was created before hooks were registered or a callback was missed.
--- Do not guess if multiple preview actors are alive; the next hook identifies the active one.
-function wardrobe.find_preview_component()
-    if state.tick < (wardrobe.discovery_tick or 0) then return nil end
-    wardrobe.discovery_tick = state.tick + 4
-    local comps = try("FindAllOf BP_AppearanceComp_C for preview",
-        function() return FindAllOf("BP_AppearanceComp_C") end)
-    if type(comps) ~= "table" then return nil end
-    local found, count = nil, 0
-    for _, comp in pairs(comps) do
-        if usable(comp) and not is_cdo(comp) then
-            local owner = soft(function() return comp:GetOwner() end)
-            local name = owner and full_name(owner) or nil
-            if name ~= nil and name:find("BP_PreviewAppearance_Hun", 1, true) then
-                found, count = comp, count + 1
-            end
-        end
-    end
-    if count ~= 1 then return nil end
-    wardrobe.comp = full_name(found)
-    trace("wardrobe: preview component recovered " .. tostring(short_name(wardrobe.comp)))
-    return found
-end
-
-function wardrobe.preview_parts()
-    local comp = wardrobe.comp and usable(StaticFindObject(wardrobe.comp)) or nil
-    if comp == nil then comp = wardrobe.find_preview_component() end
-    if comp == nil then return nil end
-    local actor = soft(function() return comp:GetOwner() end)
-    local actor_name = actor and full_name(actor) or nil
-    if actor_name == nil then return nil end
-    local path = actor_name:gsub("^%S+%s+", "")
-    local function part(name)
-        local obj = usable(StaticFindObject(path .. "." .. name))
-        if obj ~= nil and full_name(soft(function() return obj:GetOwner() end)) ~= actor_name then obj = nil end
-        return obj
-    end
-    return { actor = actor_name, driver = part("CharacterMesh0"), head = part("meshhead"), band = part("meshBand") }
-end
-
-function wardrobe.release_preview(taken)
-    local driver = resolve_component(taken.driver)
-    local head = taken.head and resolve_component(taken.head) or nil
-    local band = resolve_component(taken.band)
-    if driver ~= nil then
-        if taken.tick ~= nil and wardrobe.TICK_OPTIONS[taken.tick] then
-            set_property(driver, "VisibilityBasedAnimTickOption", wardrobe.TICK_OPTIONS[taken.tick])
-        end
-        if taken.uro ~= nil then
-            set_property(driver, "bEnableUpdateRateOptimizations", taken.uro and "True" or "False")
-        end
-        -- The component may be invisible during asynchronous setup and shown by the game later.
-        -- Restore visibility whenever we actually hid it, even if it was invisible at takeover.
-        if taken.driver_visible or taken.driver_hidden_by_us then
-            try("preview body show", function() driver:SetVisibility(true, false) end)
-        end
-    end
-    if head ~= nil and (taken.head_visible or taken.head_hidden_by_us) then
-        try("preview head show", function() head:SetVisibility(true, false) end)
-    end
-    if band ~= nil then
-        if driver ~= nil then soft(function() band:RemoveTickPrerequisiteComponent(driver) end) end
-        -- only a band that still holds our mesh gets its own state back; one the wardrobe already filled
-        -- with a game part was set up by the wardrobe itself
-        if mesh_name(band) == config.carrier_mesh_name then
-            try("preview band pp", function() band:SetDisablePostProcessBlueprint(taken.pp == true) end)
-            try("preview band visibility", function() band:SetVisibility(taken.band_visible == true, false) end)
-            local lead = taken.lead and resolve_component(taken.lead) or nil
-            if lead ~= nil then try("preview band leader", function() band:SetLeaderPoseComponent(lead, true, true) end) end
-        end
-    end
-    trace_profile(string.format('{"event":"wardrobe_release","actor":%q,"body_hidden_by_mod":%s,"head_hidden_by_mod":%s}',
-        tostring(short_name(taken.actor)), tostring(taken.driver_hidden_by_us == true),
-        tostring(taken.head_hidden_by_us == true)))
-    trace("wardrobe: preview released (" .. tostring(short_name(taken.actor)) .. ")")
-end
-
-function wardrobe.take_preview(parts)
-    local band, driver, head = parts.band, parts.driver, parts.head
-    local lead = soft(function() return band.LeaderPoseComponent end)
-    local taken = {
-        actor = parts.actor, driver = full_name(driver), band = full_name(band),
-        head = head and full_name(head) or nil,
-        lead = (lead ~= nil and valid(lead)) and full_name(lead) or nil,
-        pp = soft(function() return band:GetDisablePostProcessBlueprint() end),
-        band_visible = soft(function() return band:IsVisible() end),
-        driver_visible = soft(function() return driver:IsVisible() end),
-        head_visible = head and soft(function() return head:IsVisible() end) or nil,
-        tick = soft(function() return driver.VisibilityBasedAnimTickOption end),
-        uro = soft(function() return driver.bEnableUpdateRateOptimizations end),
-    }
-    try("preview band leader clear", function() band:SetLeaderPoseComponent(nil, true, true) end)
-    soft(function() band:AddTickPrerequisiteComponent(driver) end)
-    try("preview band pp on", function() band:SetDisablePostProcessBlueprint(false) end)
-    try("preview band animation", function() band:SetEnableAnimation(true) end)
-    try("preview band tick", function() band:SetComponentTickEnabled(true) end)
-    force_anim_refresh(driver)
-    trace("wardrobe: preview taken over (" .. tostring(short_name(parts.actor)) .. ")")
-    return taken
-end
-
-function wardrobe.preview_tick()
-    local parts = wardrobe.preview_parts()
-    local ours = parts ~= nil and parts.band ~= nil and parts.driver ~= nil
-        and mesh_name(parts.band) == config.carrier_mesh_name
-        and matches_any(mesh_name(parts.driver), config.source_mesh_names)
-    local body_mesh = parts and parts.driver and mesh_name(parts.driver) or nil
-    local band_mesh = parts and parts.band and mesh_name(parts.band) or nil
-    local signature = tostring(parts and parts.actor) .. "|" .. tostring(body_mesh) .. "|" .. tostring(band_mesh)
-    if parts ~= nil and signature ~= wardrobe.mesh_signature then
-        wardrobe.mesh_signature = signature
-        trace_profile(string.format('{"event":"wardrobe_meshes","actor":%q,"body":%q,"band":%q}',
-            tostring(short_name(parts.actor)), tostring(body_mesh), tostring(band_mesh)))
-    end
-    local taken = wardrobe.preview
-    if taken ~= nil and (not ours or parts.actor ~= taken.actor or full_name(parts.band) ~= taken.band
-        or full_name(parts.driver) ~= taken.driver
-        or (parts.head and full_name(parts.head) or nil) ~= taken.head) then
-        wardrobe.release_preview(taken)
-        wardrobe.preview, taken = nil, nil
-    end
-    if not ours then return end
-    if taken == nil then
-        wardrobe.preview = wardrobe.take_preview(parts)
-        taken = wardrobe.preview
-    end
-    -- re-asserted every scan (cheap when already right): the wardrobe's own refreshes show the hidden
-    -- body / head and hide the band again
-    local band, driver, head = parts.band, parts.driver, parts.head
-    if soft(function() return band:IsVisible() end) == false then
-        try("preview band show", function() band:SetVisibility(true, false) end)
-        try("preview band unhide", function() band:SetHiddenInGame(false, false) end)
-    end
-    if soft(function() return driver:IsVisible() end) ~= false then
-        taken.driver_hidden_by_us = true
-        try("preview body hide", function() driver:SetVisibility(false, false) end)
-    end
-    if head ~= nil and soft(function() return head:IsVisible() end) ~= false then
-        taken.head_hidden_by_us = true
-        try("preview head hide", function() head:SetVisibility(false, false) end)
-    end
-    apply_own_materials(band, "preview own material")
-    guard_materials(band, "preview material")
-end
-
 -- An outfit of our own (config.unlock_outfits, rows added by the mod's outfit table container) is owned
 -- by nobody: the wardrobe would show it locked. The player's appearance component grants it once per
 -- session - the same UnlockOutfit the game calls for its own rewards, so it is stored in the save like
@@ -5001,17 +4838,21 @@ local function scan()
         return
     end
     local phase_start = now_ms()
-    wardrobe.configure_transition()
     wardrobe.unlock_outfits()
     wardrobe.wardrobe_text()
-    wardrobe.preview_tick()
     drain_garments(config.garment_batch or 16)
     -- the player left the bound outfit: the carrier component is still there, but holds another mesh
     if state.actor_name ~= nil and state.carrier_name ~= nil and valid(state.carrier) then
         local held = mesh_name(state.carrier)
         if held ~= config.carrier_mesh_name then
             release_outfit("the carrier part now holds " .. tostring(held))
+            -- a part left visible but out of the main pass renders as a black silhouette: logged if any
+            render_check_tick = state.tick + 4
         end
+    end
+    if render_check_tick ~= nil and state.tick >= render_check_tick then
+        render_check_tick = nil
+        report_hero_render("after release", true)
     end
     discover_hero()
     setup()
@@ -5053,6 +4894,41 @@ local function on_new_garment(obj)
     -- nothing is read here: the object is still under construction. `scan()` reads it one scan later
     -- (see `adopt_garment`) and, for a cutscene copy, hides that actor's components from its own subtree.
     queue_garment(obj)
+end
+
+-- Optional, for chasing a bug without restarting the game: `<mod folder>/diagnostics.lua` is read again on
+-- every press of the diagnostics key, so what it reports can be changed while the game runs. It is not
+-- part of the package (UEMM neither installs nor tracks it); without the file nothing happens. It must
+-- return a function, which is called with the helpers below. Errors are logged, never raised: a broken
+-- diagnostic must not take the mod down. Meant to read state - changing the hero from it is at your own
+-- risk, the scan does not know about it.
+local EXTRA_DIAGNOSTICS = mod_dir .. "/diagnostics.lua"
+
+local function run_extra_diagnostics()
+    local probe = io.open(EXTRA_DIAGNOSTICS, "r")
+    if probe == nil then return end
+    probe:close()
+    local chunk, load_error = loadfile(EXTRA_DIAGNOSTICS)
+    if chunk == nil then
+        trace_problem("diagnostics.lua: " .. tostring(load_error))
+        return
+    end
+    local ok, entry = pcall(chunk)
+    if not ok or type(entry) ~= "function" then
+        trace_problem("diagnostics.lua: " .. (ok and "must return a function" or tostring(entry)))
+        return
+    end
+    local api = {
+        log = function(text) trace_problem("diag: " .. tostring(text)) end,
+        pawn = resolve_player_pawn,
+        state = state, config = config,
+        valid = valid, soft = soft, full_name = full_name, short_name = short_name,
+        mesh_name = mesh_name, part_mesh_name = part_mesh_name,
+        belongs_to_actor = belongs_to_actor, is_hero_copy = is_hero_copy,
+        report_hero_render = report_hero_render,
+    }
+    local ran, run_error = pcall(entry, api)
+    if not ran then trace_problem("diagnostics.lua failed: " .. tostring(run_error)) end
 end
 
 local function toggle_ours()
@@ -5114,10 +4990,15 @@ local function boot()
         end
         if Key[config.diagnostics_key] then
             pcall(RegisterKeyBind, Key[config.diagnostics_key], function()
-                if type(ExecuteInGameThread) == "function" then
-                    ExecuteInGameThread(dump_all)
-                else
+                local run = function()
+                    report_hero_render("key")
+                    run_extra_diagnostics()
                     dump_all()
+                end
+                if type(ExecuteInGameThread) == "function" then
+                    ExecuteInGameThread(run)
+                else
+                    run()
                 end
             end)
         end

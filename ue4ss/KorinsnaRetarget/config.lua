@@ -158,7 +158,7 @@ return {
     report_motion_every = 0,
 
     toggle_key = "F9",
-    diagnostics_key = "F11",
+    diagnostics_key = "HOME",  -- not F11: the game toggles fullscreen on it
     rescan_interval = 0.5,
 
     -- diagnostic switch: only report what is loaded, never change anything
