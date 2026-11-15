@@ -186,7 +186,7 @@ local DEFAULTS = {
     dump_census = false,
 
     toggle_key = "F9",
-    diagnostics_key = "HOME",  -- not F11: the game toggles fullscreen on it
+    diagnostics_key = "F12",  -- Steam's screenshot key: one press gives a screenshot and the log lines of the same second (not F11: the game toggles fullscreen on it)
     rescan_interval = 0.5,
 
     -- Dev only: measure how long a scan takes, and report a stall (the game thread was busy before the
@@ -204,7 +204,7 @@ local DEFAULTS = {
     -- so the instance that shows the intended image can be found without a cook per guess.
     -- F12 = next candidate, wrapping through the shipped assignment (index 0).
     material_probe = false,
-    material_probe_key = "F12",
+    material_probe_key = "END",   -- F12 is the diagnostics key
     material_probe_slots = { 6 },
     -- the hero's head slot is normally a plain `MI_ZeroHun_Head_*`; the damage-status variants used by
     -- the build (`Head_health`, `Head_Injured30`) paint the eye card dark
@@ -4968,7 +4968,7 @@ local function boot()
             end
         end
         if config.material_probe then
-            local probe_key = Key[config.material_probe_key or "F12"]
+            local probe_key = Key[config.material_probe_key or "END"]
             if probe_key then
                 pcall(RegisterKeyBind, probe_key, function()
                     local step = function()
