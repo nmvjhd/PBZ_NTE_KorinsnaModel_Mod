@@ -42,35 +42,110 @@ HOST_HUN_TEX_DIR = "/Game/Test/Zero_LookDev/ZeroFile/Character/Hun/Head/Textures
 #   Cloth_02_b  intensity 0.5 -> half albedo + half fabric noise  <- the (near-white) skin
 #   Cloth_05_b  intensity 1.0 -> the detail layer only (white)    <- the small white highlight bits
 # Only MIs with their own albedo texture can be used, one distinct albedo path per slot.
-# --- Yae Sakura build: 4 atlas slots (see characters/yae/scripts/prepare_yae.py). The mesh's material names are
-# Yae_00_Cloth / Yae_01_Skin / Yae_02_MaskA / Yae_03_MaskB and the list index is that number.
-#   0 clothes  -> Cloth_04_b (MAI_Cloth, pure albedo; also the slot the runtime material guard restores)
-#   1 skin+hair-> Cloth_03_b (MAI_Equipment: no fabric weave on skin)
-#   2 lace/decal, 3 eyes/lashes -> the two MAI_Equipment_Mask instances, cut out on Mix (ARM) alpha
+#
+# Slot 5 (eyebrow) and slot 4 (face) sample the SAME image (`T_NPC_036_face_d`), and the face texture
+# already carries the brows, so the eyebrow can ride on the face's own instance. That frees the
+# `T_ZeroHun_Head_D` albedo path for the eyes - which is the whole point: the eye slot must not use
+# `MI_ZeroHun_Eye_01`, because its parent is `MA_EyeRefractive_02`, a *refractive eyeball* shader. It
+# samples the albedo through an iris remap plus an iris-height map, so the model's own eye card (two
+# eyes, thick lash ring, baked eyelid shading) comes out small, offset and nearly black - measured in
+# game. `MA_EyeRefractive` is a different shader family from every other slot; the model's own eye
+# material was an ordinary toon albedo material (`MI_NPC_036_eye`: BlendMode Masked, MSM_Toon).
+#
+# So the eye uses the same toon family as the rest of the model (`MAI_Skin`, slot 5's former instance)
+# and `T_ZeroHun_Head_D` carries the untouched original eye card. Nothing samples `T_ZeroHun_Eye_*` any
+# more, so those overrides are gone as well - which is also why other characters' eyes are no longer
+# touched by this mod.
+#
+# Slot 7 is NOT a white trim: the model's `MI_NPC_036_gaoguang` uses the SAME eye card as its base colour
+# (its UVs are a 3% x 3% patch - the specular glint on the eye). Feeding it a white texture painted a
+# white blob over the eye, which read as white eyelashes. Both slots therefore share one instance, which
+# is exactly how the source model is set up.
 SLOTS = [
-    "%s/MI_ZeroHun_Cloth_04_b" % HOST_MI_DIR,
-    "%s/MI_ZeroHun_Cloth_03_b" % HOST_MI_DIR,
-    "%s/MI_ZeroHun_Cloth_01_b" % HOST_MI_DIR,
-    "%s/MI_ZeroHun_Cap_01_b" % HOST_MI_DIR,
+    "%s/MI_ZeroHun_Cloth_04_b" % HOST_MI_DIR,           # dress      (MAI_Cloth, pure albedo)
+    "%s/MI_ZeroHun_Cloth_02_b" % HOST_MI_DIR,           # body       (MAI_Cloth)
+    "%s/MI_ZeroHun_Cloth_03_b" % HOST_MI_DIR,           # front hair (MAI_Equipment)
+    "%s/MI_ZeroHun_Cloth_01_b" % HOST_MI_DIR,           # back hair  (MAI_Equipment_Mask)
+    "%s/MI_ZeroHun_Cap_01_b" % HOST_MI_DIR,             # face       (MAI_Equipment_Mask)
+    "%s/MI_ZeroHun_Cap_01_b" % HOST_MI_DIR,             # eyebrow    (same image as the face)
+    "%s/MI_ZeroHun_Head_Injured30" % HOST_HEAD_MI_DIR,  # eyes       (MAI_Skin toon, plain albedo)
+    "%s/MI_ZeroHun_Head_Injured30" % HOST_HEAD_MI_DIR,  # eye glint  (same image as the eyes)
 ]
 
 # (folder, texture name, our tga, kind) - kind drives the sampler settings
 TEXTURES = [
-    # slot 0 clothes (Cloth_04), slot 1 skin + hair (Cloth_03): opaque atlases, neutral shading maps
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_BC", "T_Yae_Cloth_BC", "albedo"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_ARM", "T_Korinsna_ARM", "mask"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_N", "T_Korinsna_N", "normal"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_03_BC", "T_Yae_Skin_BC", "albedo"),
+    # albedo: one distinct host texture per slot. The dress owns the Cloth_04 set (the only lit cloth
+    # instance with a pure albedo), the skin the Cloth_02 set, and the white highlight keeps Cloth_05.
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_01_BC", "T_NPC_036_hair_02_d", "albedo"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_02_BC", "T_NPC_036_02_d", "albedo"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_03_BC", "T_NPC_036_hair_01_d", "albedo"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_BC", "T_NPC_036_01_d", "albedo"),
+    # Kept even though no slot points at `MI_ZeroHun_Cloth_05_b` any more: this image is also the
+    # `DetailColor` layer the other cloth instances blend in (`BaseColor Intensity`), so leaving Hun's
+    # version in place would put his fabric detail on Korinsna's cloth.
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_05_BC", "T_Korinsna_White", "albedo"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cap_V02_BC", "T_NPC_036_face_d", "albedo"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_D", "T_NPC_036_eyes_d", "albedo"),
+    # The refractive eye textures are deliberately NOT overridden: nothing in this mod samples them any
+    # more (the eye slot moved to a toon instance, see SLOTS), and overwriting them would change the eyes
+    # of every other character that uses `MI_ZeroHun_Eye_01`.
+    # neutral shading inputs so nothing tints, dirties or glosses the albedo
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_01_ARM", "T_Korinsna_ARM", "mask"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_02_ARM", "T_Korinsna_ARM", "mask"),
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_03_ARM", "T_Korinsna_ARM", "mask"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_03_N", "T_Korinsna_N", "normal"),
-    # slot 2 lace / decal (Cloth_01), slot 3 eyes / lashes (Cap): the ARM alpha carries the cutout
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_01_BC", "T_Yae_MaskA_BC", "albedo"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cloth_01_ARM", "T_Yae_MaskA_ARM", "mask"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_ARM", "T_Korinsna_ARM", "mask"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_05_ARM", "T_Korinsna_ARM", "mask"),
     (HOST_TEX_DIR, "T_ZeroHun_Cloth_01_N", "T_Korinsna_N", "normal"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cap_V02_BC", "T_Yae_MaskB_BC", "albedo"),
-    (HOST_TEX_DIR, "T_ZeroHun_Cap_V02_ARM", "T_Yae_MaskB_ARM", "mask"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_02_N", "T_Korinsna_N", "normal"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_03_N", "T_Korinsna_N", "normal"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_04_N", "T_Korinsna_N", "normal"),
+    (HOST_TEX_DIR, "T_ZeroHun_Cloth_05_N", "T_Korinsna_N", "normal"),
     (HOST_TEX_DIR, "T_ZeroHun_Cap_V02_N", "T_Korinsna_N", "normal"),
+    (HOST_HEAD_TEX_DIR, "T_ZeroHun_Head_N", "T_Korinsna_N", "normal"),
+    (HOST_TEX_DIR, "T_ZeroHun_Head_Detail_N", "T_Korinsna_N", "normal"),
+    (HOST_TEX_DIR, "T_ZeroHun_Head_V02_SCMT", "T_Korinsna_White", "mask"),
+    (HOST_HUN_TEX_DIR, "T_ZeroHun_Head_DirtMask", "T_Korinsna_Black", "mask"),
 ]
+
+# ---------------------------------------------------------------- per-character layout (opt-in)
+# PBZ_MATERIAL_LAYOUT names a JSON file (set by the character builder from build.json "materials") that replaces
+# the Korinsna layout above:
+#   "slots": one entry per mesh slot, either
+#       a host instance path (borrowed, its textures overwritten through "textures"), or
+#       an own-material slot {"parent": <host instance path>, "textures": {"BC": tga, "ARM": tga, "N": tga},
+#       "replaces": <host texture path prefix, optional>} - its textures are imported as Own/T_Own_NN_<key>,
+#       nothing of the game's is overwritten, and any number of slots may share one parent; "replaces" names
+#       the host textures an earlier borrowing build overrode, whose leftovers are deleted so they never ship;
+#   "textures": [folder, name, tga, kind] overrides for borrowed slots (may be empty);
+#   "slot_texture_base": legacy own slots selected by PBZ_OWN_MATERIAL_SLOTS on a borrowed-style entry;
+#   "match_slots_by_name": assign mesh sections by the NN in "<Prefix>_NN_<name>" instead of import order.
+# Unset = the layout above.
+import json as _json
+import os as _layout_os
+
+SLOT_TEXTURE_BASE = {}
+OWN_SPEC = {}          # slot -> {"textures": {...}, "replaces": prefix or None} for own-material slot objects
+MATCH_SLOTS_BY_NAME = False
+LAYOUT_PATH = _layout_os.environ.get("PBZ_MATERIAL_LAYOUT")
+if LAYOUT_PATH:
+    with open(LAYOUT_PATH, encoding="utf-8") as _handle:
+        _layout = _json.load(_handle)
+    SLOTS = []
+    for _index, _slot in enumerate(_layout["slots"]):
+        if isinstance(_slot, dict):
+            _textures = _slot.get("textures", {})
+            if sorted(_textures) != ["ARM", "BC", "N"] or not _slot.get("parent"):
+                raise SystemExit("material layout %s: slot %d needs a parent and BC/ARM/N textures"
+                                 % (LAYOUT_PATH, _index))
+            SLOTS.append(_slot["parent"])
+            OWN_SPEC[_index] = {"textures": dict(_textures), "replaces": _slot.get("replaces")}
+        else:
+            SLOTS.append(_slot)
+    TEXTURES = [tuple(entry) for entry in _layout.get("textures", [])]
+    SLOT_TEXTURE_BASE = {int(k): v for k, v in _layout.get("slot_texture_base", {}).items()}
+    MATCH_SLOTS_BY_NAME = bool(_layout.get("match_slots_by_name", False))
+    if not SLOTS or any(len(entry) != 4 for entry in TEXTURES):
+        raise SystemExit("material layout %s: needs slots and 4-field textures" % LAYOUT_PATH)
 
 RESULT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-buildassets-result.txt"
 
@@ -134,8 +209,11 @@ import os as _os
 
 MEL = unreal.MaterialEditingLibrary
 OWN_DIR = "/Game/Korinsna/Own"
-OWN_SLOTS = sorted({int(v) for v in _os.environ.get("PBZ_OWN_MATERIAL_SLOTS", "").replace(" ", "").split(",") if v})
-SLOT_TEXTURE_BASE = {0: "T_ZeroHun_Cloth_04", 1: "T_ZeroHun_Cloth_03", 2: "T_ZeroHun_Cloth_01", 3: "T_ZeroHun_Cap_V02"}
+OWN_SLOTS = sorted({int(v) for v in _os.environ.get("PBZ_OWN_MATERIAL_SLOTS", "").replace(" ", "").split(",") if v}
+                   | set(OWN_SPEC))
+missing_base = [slot for slot in OWN_SLOTS if slot not in SLOT_TEXTURE_BASE and slot not in OWN_SPEC]
+if missing_base:
+    raise SystemExit("own material slots %s have no slot_texture_base in the material layout" % missing_base)
 OWN_TEXTURES = {}      # slot -> {"BC": texture, "ARM": texture, "N": texture}
 log("own material slots: %s" % (OWN_SLOTS or "none"))
 
@@ -157,16 +235,31 @@ for folder, name in PRUNED:
         log("pruned stale override %s" % stale)
 
 # ---------------------------------------------------------------- texture overrides
+# One work list: (folder, name, tga, kind, own slot, own key, stale host override). Own-material slot objects
+# come first in slot order, BC / ARM / N each; then the "textures" overrides, of which a legacy own slot
+# (PBZ_OWN_MATERIAL_SLOTS + slot_texture_base) is redirected into Own/ as well.
+KIND = {"BC": "albedo", "ARM": "mask", "N": "normal"}
+WORK = []
+for own_slot in sorted(OWN_SPEC):
+    spec = OWN_SPEC[own_slot]
+    for suffix in ("BC", "ARM", "N"):
+        stale = "%s_%s" % (spec["replaces"], suffix) if spec["replaces"] else None
+        WORK.append((OWN_DIR, "T_Own_%02d_%s" % (own_slot, suffix), spec["textures"][suffix], KIND[suffix],
+                     own_slot, suffix, stale))
 for folder, name, tga, kind in TEXTURES:
     own_slot, suffix = own_slot_of(name)
-    if own_slot is not None:
+    if own_slot is not None and own_slot not in OWN_SPEC:
+        WORK.append((OWN_DIR, "T_Own_%02d_%s" % (own_slot, suffix), tga, kind, own_slot, suffix,
+                     "%s/%s" % (folder, name)))
+    else:
+        WORK.append((folder, name, tga, kind, None, None, None))
+
+for folder, name, tga, kind, own_slot, suffix, stale in WORK:
+    if stale and EAL.does_asset_exist(stale):
         # an override left in the project by an earlier build would still be cooked and shipped, and would
         # keep changing the original outfit - remove it
-        stale = "%s/%s" % (folder, name)
-        if EAL.does_asset_exist(stale):
-            EAL.delete_asset(stale)
-            log("removed stale hero texture override %s" % stale)
-        folder, name = OWN_DIR, "T_Own_%02d_%s" % (own_slot, suffix)
+        EAL.delete_asset(stale)
+        log("removed stale hero texture override %s" % stale)
     ensure_dir(folder)
     dest = "%s/%s" % (folder, name)
     delete_if_exists(dest)
@@ -189,8 +282,17 @@ for folder, name, tga, kind in TEXTURES:
         OWN_TEXTURES.setdefault(own_slot, {})[suffix] = tex
 
 
+STAND_INS = {}   # host instance path -> stand-in built this run; several own slots may share one parent
+
+
 def parameter_stand_in(path, textures):
-    """A material at a game instance's path that exposes the texture parameters a child overrides."""
+    """A material at a game instance's path that exposes the texture parameters a child overrides.
+
+    Built once per path and run: rebuilding it would delete the stand-in an earlier slot's child already
+    points at. Its default textures are the first slot's; they never matter, the stand-in is not shipped."""
+    if path in STAND_INS:
+        log("  stand-in %s reused" % path)
+        return STAND_INS[path]
     folder, name = path.rsplit("/", 1)
     ensure_dir(folder)
     delete_if_exists(path)
@@ -213,6 +315,7 @@ def parameter_stand_in(path, textures):
         MEL.connect_material_property(node, output, target)
     MEL.recompile_material(material)
     EAL.save_loaded_asset(material, False)
+    STAND_INS[path] = material
     return material
 
 # ---------------------------------------------------------------- slot placeholders
@@ -285,24 +388,35 @@ if mesh is None:
     raise SystemExit("missing %s - run import_korinsna_sk.py first" % MESH)
 
 # ---------------------------------------------------------------- assign material slots
-# Sections keep the order the FBX import gave them; each one is matched to its slot by the number in the
-# material name it was imported with (Yae_00_Cloth -> SLOTS[0], ...), so a reordered import cannot swap
-# the atlases.
 import re as _re
 
 new_mats = []
-for entry in mesh.get_editor_property("materials"):
-    imported = str(entry.get_editor_property("imported_material_slot_name"))
-    match = _re.search(r"^[A-Za-z][A-Za-z0-9]*_(\d\d)_", imported)
-    if match is None:
-        raise SystemExit("unexpected material slot on the mesh: %s" % imported)
-    mi_path = mi_slots[int(match.group(1))]
-    mi = EAL.load_asset(mi_path) if mi_path else None
-    if mi is None:
-        log("slot material missing: %s" % mi_path)
-    entry.set_editor_property("material_interface", mi)
-    new_mats.append(entry)
-    log("slot %s -> %s" % (imported, mi_path))
+if MATCH_SLOTS_BY_NAME:
+    # Sections keep the order the FBX import gave them; each one is matched to its slot by the number in the
+    # material name it was imported with (Yae_00_Cloth -> SLOTS[0], ...), so a reordered import cannot swap
+    # the atlases. The imported slot names are kept.
+    for entry in mesh.get_editor_property("materials"):
+        imported = str(entry.get_editor_property("imported_material_slot_name"))
+        match = _re.search(r"^[A-Za-z][A-Za-z0-9]*_(\d\d)_", imported)
+        if match is None:
+            raise SystemExit("unexpected material slot on the mesh: %s" % imported)
+        mi_path = mi_slots[int(match.group(1))]
+        mi = EAL.load_asset(mi_path) if mi_path else None
+        if mi is None:
+            log("slot material missing: %s" % mi_path)
+        entry.set_editor_property("material_interface", mi)
+        new_mats.append(entry)
+        log("slot %s -> %s" % (imported, mi_path))
+else:
+    # the reference layout: slots in import order, renamed Korinsna_NN
+    for i, mi_path in enumerate(mi_slots):
+        mi = EAL.load_asset(mi_path) if mi_path else None
+        if mi is None:
+            log("slot material missing: %s" % mi_path)
+        entry = unreal.SkeletalMaterial()
+        entry.set_editor_property("material_interface", mi)
+        entry.set_editor_property("material_slot_name", "Korinsna_%02d" % i)
+        new_mats.append(entry)
 # ---------------------------------------------------------------- Mix (ARM) channel-order test (opt-in)
 # PBZ_ARM_VARIANTS=1 ships a few flat Mix maps with different channel layouts and an extra, unused material
 # slot whose instance only exists to keep them loaded. A UE4SS script can then swap them in at run time to
