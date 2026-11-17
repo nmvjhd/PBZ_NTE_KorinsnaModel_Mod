@@ -2491,220 +2491,25 @@ local function is_hero_copy(owner_name)
     return pawn ~= nil and pawn ~= owner_name
 end
 
--- Object path -> live object, cached. Only objects that already exist in memory resolve, which is
--- fine here: every material instance we name is referenced by the mesh itself, so it is loaded.
-local function resolve_material(path)
-    if state.material_cache == nil then state.material_cache = {} end
-    local cached = state.material_cache[path]
-    if usable(cached) then return cached end
-    local found = find_loaded(path)
-    if found then
-        state.material_cache[path] = found
-    end
-    return found
-end
-
--- Own materials: slots whose mesh material is a cooked "holder" instance (/Game/.../Own/MI_Own_NN).
---
--- A holder is a child of one of the hero's material instances and carries OUR textures at our own asset
--- paths, so nothing of the game's is overwritten. It cannot render by itself: the hero's master material
--- is layered and its texture parameters are LAYER parameters (association 0, layer 0), while a cooked
--- child only gets global overrides and - cooked against a stand-in parent - loses the layer inheritance
--- as well (it shows the grey placeholder). What does work, verified in game, is a DYNAMIC instance of the
--- hero's instance with the textures set through the full parameter info. So per holder slot this builds
--- that dynamic instance once, and puts it back whenever the game replaces the slot (the damage system
--- swaps slot 0 of the head part, see guard_materials).
-local OWN_HOLDER_MARK = "/Own/MI_Own_"
-local LAYER_PARAMETER = 0
-
--- slot index -> holder instance, read from the mesh ASSET (the component's slots may already be swapped)
-local function own_holders(component)
-    local mesh = nil
-    pcall(function() mesh = component:GetSkeletalMeshAsset() end)
-    if not valid(mesh) then return nil end
-    local key = full_name(mesh)
-    if key == nil then return nil end
-    if state.own_holders == nil then state.own_holders = {} end
-    local cached = state.own_holders[key]
-    if cached ~= nil then
-        local alive = true
-        for _, holder in pairs(cached) do
-            if not valid(holder) then alive = false end
-        end
-        if alive then return cached end
-    end
-    local holders = {}
-    local slot = 0
-    pcall(function()
-        mesh.Materials:ForEach(function(_, element)
-            local material = nil
-            pcall(function() material = element:get().MaterialInterface end)
-            local name = valid(material) and full_name(material) or ""
-            if name ~= nil and name:find(OWN_HOLDER_MARK, 1, true) then
-                holders[slot] = material
-            end
-            slot = slot + 1
-        end)
-    end)
-    state.own_holders[key] = holders
-    return holders
-end
-
-local function build_own_instance(component, index, holder)
-    local base = nil
-    pcall(function() base = holder.Parent end)
-    if not valid(base) then return nil, 0 end
-    local instance = nil
-    pcall(function() instance = component:CreateDynamicMaterialInstance(index, base, FName("None")) end)
-    if not valid(instance) then return nil, 0 end
-    local applied = 0
-    pcall(function()
-        holder.TextureParameterValues:ForEach(function(_, element)
-            local entry = element:get()
-            local texture = entry.ParameterValue
-            local name = nil
-            pcall(function() name = entry.ParameterInfo.Name:ToString() end)
-            if name ~= nil and valid(texture) then
-                local ok = pcall(function()
-                    instance:SetTextureParameterValueByInfo(
-                        { Name = FName(name), Association = LAYER_PARAMETER, Index = 0 }, texture)
-                end)
-                if ok then applied = applied + 1 end
-            end
-        end)
-    end)
-    return instance, applied
-end
-
-local function apply_own_materials(component, label)
-    local holders = own_holders(component)
-    if holders == nil or next(holders) == nil then return end
-    local key = full_name(component)
-    if key == nil then return end
-    if state.own_instances == nil then state.own_instances = {} end
-    local instances = state.own_instances[key]
-    if instances == nil then
-        instances = {}
-        state.own_instances[key] = instances
-    end
-    local prefix = label or "own material"
-    for index, holder in pairs(holders) do
-        local have = nil
-        pcall(function() have = component:GetMaterial(index) end)
-        local have_name = valid(have) and full_name(have) or "<none>"
-        local instance = instances[index]
-        if valid(instance) then
-            if full_name(instance) ~= have_name then
-                local ok = pcall(function() component:SetMaterial(index, instance) end)
-                trace(string.format("%s: slot %d was %s -> own instance restored (%s)", prefix, index,
-                    tostring(short_name(have_name)), ok and "ok" or "FAILED"))
-            end
-        else
-            local made, applied = build_own_instance(component, index, holder)
-            if made ~= nil then
-                instances[index] = made
-                trace(string.format("%s: slot %d -> dynamic instance of %s with %d texture(s)", prefix, index,
-                    tostring(short_name(full_name(holder) or "?")), applied))
-            elseif not state.own_failed then
-                state.own_failed = true
-                trace(string.format("%s: slot %d could not build a dynamic instance", prefix, index))
-            end
-        end
-    end
-end
-
-local function own_slot_active(component, index)
-    if state.own_instances == nil then return false end
-    local key = full_name(component)
-    local instances = key ~= nil and state.own_instances[key] or nil
-    return instances ~= nil and instances[index] ~= nil
-end
-
--- The game's status system swaps the first material slot of the *head part* when the hero is hurt
--- (`Hun_Status/MI_ZeroHun_Head_Injured*`, seen in the log as
--- `material[0] MID_MI_ZeroHun_Head_Injured30_...`). Our mesh ships as that head part, so the dress
--- slot ended up rendering with a pale skin shader instead of its albedo - the "faded dress" bug.
--- Whatever the game puts in a guarded slot is replaced with the intended instance again.
-local function guard_materials(component, label)
-    local guard = config.material_guard
-    if type(guard) ~= "table" then return end
-    local prefix = label or "material"
-    for index, path in pairs(guard) do
-        -- a slot on an own material is kept by apply_own_materials; restoring the borrowed instance here
-        -- would make the two fight every scan
-        local want = nil
-        local own = own_slot_active(component, index)
-        if not own then want = resolve_material(path) end
-        if own then
-            -- nothing to do
-        elseif want == nil then
-            if not state.guard_missing then
-                state.guard_missing = true
-                trace(prefix .. ": cannot resolve " .. tostring(path))
-            end
-        else
-            local have = try("GetMaterial", function() return component:GetMaterial(index) end)
-            local have_name = usable(have) and full_name(have) or "<none>"
-            if have_name ~= full_name(want) then
-                local ok = pcall(function() component:SetMaterial(index, want) end)
-                trace(string.format("%s: slot %d was %s -> restored %s (%s)", prefix, index,
-                    tostring(short_name(have_name)), tostring(short_name(path)),
-                    ok and "ok" or "FAILED"))
-            end
-        end
-    end
-end
-
--- A carrier component that now holds a game part again: every slot that still renders a material this
--- script put there (an own dynamic instance, or a `material_guard` instance) gets the new mesh's own
--- material for that slot back. `EmptyOverrideMaterials` would be the one-call way, but it cannot be called
--- from Lua in this build ("attempt to call a TrivialObject value"). Returns true when a slot was reset.
-local function remove_our_materials(obj, key)
-    -- slot -> names of the materials this script wrote there
-    local ours = {}
-    local instances = state.own_instances and state.own_instances[key] or nil
-    for index, instance in pairs(instances or {}) do
-        local name = valid(instance) and full_name(instance) or nil
-        if name ~= nil then ours[index] = { [name] = true } end
-    end
-    for index, path in pairs(type(config.material_guard) == "table" and config.material_guard or {}) do
-        local want = resolve_material(path)
-        local name = want ~= nil and full_name(want) or nil
-        if name ~= nil then
-            ours[index] = ours[index] or {}
-            ours[index][name] = true
-        end
-    end
-    local defaults = {}
-    pcall(function()
-        local slot = 0
-        obj:GetSkeletalMeshAsset().Materials:ForEach(function(_, element)
-            local material = nil
-            pcall(function() material = element:get().MaterialInterface end)
-            defaults[slot] = material
-            slot = slot + 1
-        end)
-    end)
-    local reset = false
-    for index, names in pairs(ours) do
-        local have = soft(function() return obj:GetMaterial(index) end)
-        local name = (have ~= nil and valid(have)) and full_name(have) or nil
-        local default = defaults[index]
-        if name ~= nil and names[name] and default ~= nil and valid(default) then
-            reset = true
-            try("carrier material reset", function() obj:SetMaterial(index, default) end)
-        end
-    end
-    if state.own_instances then state.own_instances[key] = nil end
-    return reset
-end
+local materials = assert(loadfile(mod_dir .. "/Scripts/materials.lua"))()({
+    state = state,
+    config = config,
+    soft = soft,
+    try = try,
+    usable = usable,
+    valid = valid,
+    find_loaded = find_loaded,
+    full_name = full_name,
+    short_name = short_name,
+    trace = trace,
+})
 
 -- A hero copy's part that carried our mesh and now holds a game part again (the wardrobe preview or a
 -- cutscene copy changed outfit; it is the same component with another mesh). What this script did to it
 -- as a carrier is undone: our materials go, and it follows its attach parent (the copy's body) again
 -- instead of standing in its reference pose with the leader pose we cleared.
 local function release_copy_carrier(obj, key)
-    local reset = remove_our_materials(obj, key)
+    local reset = materials.remove_ours(obj, key)
     local parent = soft(function() return obj:GetAttachParent() end)
     if parent ~= nil and valid(parent) then
         try("copy leader pose restore", function() obj:SetLeaderPoseComponent(parent, true, true) end)
@@ -2946,8 +2751,8 @@ local function apply_copy_hiding()
                 try("copy keep ticking", function() obj:SetComponentTickEnabled(true) end)
                 trace("copy: made " .. tostring(short_name(key)) .. " evaluate the retarget")
             end
-            apply_own_materials(obj, "copy own material")
-            guard_materials(obj, "copy material")
+            materials.apply_own(obj, "copy own material")
+            materials.guard(obj, "copy material")
         elseif state.copy_index then
             state.copy_index[carriers[index]] = nil
         end
@@ -3155,742 +2960,35 @@ local function quiet_blank_parts()
     end
 end
 
--- Reports how each weapon is attached: parent component, socket name, and whether that changes between
--- scans. This decides whether the weapons can be re-parented onto Korinsna's hands at all - if the
--- game re-attaches them every frame, any re-parenting is undone immediately and the two drivers fight.
-local function report_weapon_attachment(tag)
-    local objects = try("FindAllOf SkeletalMeshComponent",
-        function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) ~= "table" then return end
-    for _, obj in pairs(objects) do
-        if usable(obj) then
-            local mesh = part_mesh_name(obj)
-            if mesh ~= nil and is_weapon_mesh(mesh) then
-                local parent = try("GetAttachParent", function() return obj:GetAttachParent() end)
-                local socket = try("GetAttachSocketName",
-                    function() return obj:GetAttachSocketName() end)
-                local socket_text = "?"
-                if socket ~= nil then
-                    -- FName arrives as userdata; tell UE4SS to render it
-                    socket_text = tostring(try("ToString", function() return socket:ToString() end)
-                        or socket)
-                end
-                trace(string.format("attach[%s]: %-26s parent=%-20s socket=%s", tag,
-                    tostring(mesh), tostring(short_name(full_name(parent))), socket_text))
-            end
-        end
-    end
-end
-
--- ---------------------------------------------------------------------------------------------
--- Weapon geometry census
---
--- The weapons are drawn where Hun's hand is, and Korinsna's arm is shorter, so the question that
--- has to be answered with numbers is: how far apart are the two hands, and what is each weapon
--- actually parented to (its own actor's Root, or the hero's body component)? The attach chain is
--- printed in full because a weapon mesh hanging from `Root` of its OWN actor means the actor - not
--- the component - is what has to be re-parented.
--- ---------------------------------------------------------------------------------------------
-
-local function attach_chain(component, depth)
-    local parts = { object_name(component) .. "/" .. socket_text_of(component) }
-    local node = component
-    for _ = 1, (depth or 5) - 1 do
-        local parent = try("GetAttachParent", function() return node:GetAttachParent() end)
-        if not usable(parent) then break end
-        parts[#parts + 1] = object_name(parent) .. "/" .. socket_text_of(parent)
-        node = parent
-    end
-    return table.concat(parts, " <- ")
-end
-
--- A weapon that is put away must end up exactly where the game's back socket puts it. The only way to
--- know what the game does at that moment is to record the whole attach chain whenever it changes
--- (which component is attached to what, with which socket), so the fix works from facts.
-local function watch_weapon_chain()
-    if not config.report_weapon_chain then return end
-    local source = state.source
-    if not valid(source) then return end
-    local carrier = state.body or state.carrier
-    local carrier_name = valid(carrier) and full_name(carrier) or "<none>"
-    local objects = try("FindAllOf SkeletalMeshComponent",
-        function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) ~= "table" then return end
-    state.weapon_chain = state.weapon_chain or {}
-    local seen = {}
-    for _, obj in pairs(objects) do
-        if usable(obj) and not is_cdo(obj) then
-            local mesh = part_mesh_name(obj)
-            if mesh ~= nil and is_weapon_mesh(mesh) then
-                local owner = try("GetOwner", function() return obj:GetOwner() end)
-                if usable(owner) and full_name(owner) ~= state.actor_name then
-                    local root = actor_root_of(obj)
-                    local key = usable(root) and full_name(root) or tostring(mesh)
-                    if not seen[key] then
-                        seen[key] = true
-                        -- only the hero's own weapons: every NPC carries one too, and those would
-                        -- only add noise
-                        local parent_name = full_name(try("GetAttachParent",
-                            function() return root:GetAttachParent() end))
-                        if parent_name == state.source_name or parent_name == carrier_name then
-                            local chain = attach_chain(obj, 4)
-                            if state.weapon_chain[key] ~= chain then
-                                state.weapon_chain[key] = chain
-                                local socket = socket_text_of(root)
-                                local socket_world = try("GetSocketLocation",
-                                    function() return source:GetSocketLocation(FName(socket)) end)
-                                local gap = distance(component_location(root), socket_world)
-                                trace(string.format(
-                                    "weapon chain: %-22s %s | root gap to socket %s", tostring(mesh),
-                                    chain, gap < math.huge and string.format("%.1f cm", gap) or "?"))
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
-
-local function bone_world_rot(component, name)
-    local rotator = nil
-    pcall(function() rotator = component:GetSocketRotation(FName(name)) end)
-    if rotator == nil then return nil end
-    local pitch = rotator.Pitch or rotator.pitch
-    local yaw = rotator.Yaw or rotator.yaw
-    local roll = rotator.Roll or rotator.roll
-    if pitch == nil then return nil end
-    return { Pitch = tonumber(pitch), Yaw = tonumber(yaw), Roll = tonumber(roll) }
-end
-
-local function fmt_rot(rotator)
-    if not rotator then return "?" end
-    return string.format("p%.1f/y%.1f/r%.1f", rotator.Pitch, rotator.Yaw, rotator.Roll)
-end
-
--- Sockets are how the hero's own weapons are attached, so knowing which ones exist decides whether
--- Korinsna's skeleton needs a matching socket or whether the weapon hangs from a bone.
-local function log_sockets(component, tag)
-    local mesh = mesh_of(component)
-    if not mesh then return end
-    local skeleton = try("GetSkeleton", function() return mesh:GetSkeleton() end)
-    for _, holder in ipairs({ { "mesh", mesh }, { "skel", skeleton } }) do
-        if usable(holder[2]) then
-            local ok, list = pcall(function() return holder[2].Sockets end)
-            if ok and list ~= nil then
-                local names, count = {}, 0
-                pcall(function() count = list:GetArrayNum() end)
-                if count == 0 then pcall(function() count = #list end) end
-                for index = 1, math.min(tonumber(count) or 0, 80) do
-                    local socket = nil
-                    pcall(function() socket = list[index] end)
-                    local name = nil
-                    if socket ~= nil then
-                        pcall(function() name = socket.SocketName end)
-                        if name == nil then
-                            pcall(function() name = socket:GetPropertyValue("SocketName") end)
-                        end
-                    end
-                    if name ~= nil then
-                        names[#names + 1] = tostring(
-                            try("ToString", function() return name:ToString() end) or name)
-                    end
-                end
-                trace(string.format("%s sockets[%s] n=%s: %s", tag, holder[1], tostring(count),
-                    table.concat(names, " ")))
-            end
-        end
-    end
-end
-
-local function report_weapon_geometry(tag, with_tree)
-    local source = state.source
-    local carrier = state.body or state.carrier
-    if not valid(source) or not valid(carrier) then return end
-
-    local game_l = bone_world(source, "hand_l")
-    local game_r = bone_world(source, "hand_r")
-    local our_l = bone_world(carrier, "Bip001-L-Hand")
-    local our_r = bone_world(carrier, "Bip001-R-Hand")
-    trace(string.format("geo[%s] hands game L%s R%s | ours L%s R%s | apart L=%.1f R=%.1f",
-        tag, fmt_vec(game_l), fmt_vec(game_r), fmt_vec(our_l), fmt_vec(our_r),
-        distance(game_l, our_l), distance(game_r, our_r)))
-    trace(string.format("geo[%s] hand rot game L %s R %s | ours L %s R %s", tag,
-        fmt_rot(bone_world_rot(source, "hand_l")), fmt_rot(bone_world_rot(source, "hand_r")),
-        fmt_rot(bone_world_rot(carrier, "Bip001-L-Hand")),
-        fmt_rot(bone_world_rot(carrier, "Bip001-R-Hand"))))
-    trace(string.format("geo[%s] source=%s carrier=%s actor=%s", tag, object_name(source),
-        object_name(carrier), object_name(state.actor)))
-    log_sockets(source, "geo[" .. tag .. "]")
-    log_sockets(carrier, "geo[" .. tag .. "]")
-
-    state.weapon_prev = state.weapon_prev or {}
-    local objects = try("FindAllOf SkeletalMeshComponent",
-        function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) == "table" then
-        for _, obj in pairs(objects) do
-            if usable(obj) and not is_cdo(obj) then
-                local mesh = part_mesh_name(obj)
-                if mesh ~= nil and is_weapon_mesh(mesh) then
-                    local at = component_location(obj)
-                    local owner = try("GetOwner", function() return obj:GetOwner() end)
-                    local key = full_name(obj) or mesh
-                    local previous = state.weapon_prev[key]
-                    state.weapon_prev[key] = at
-                    trace(string.format("geo[%s] %-26s owner=%s", tag, tostring(mesh),
-                        object_name(owner)))
-                    trace(string.format("geo[%s]   chain %s", tag, attach_chain(obj, 6)))
-                    trace(string.format(
-                        "geo[%s]   world%s moved=%s toGameL=%.1f toGameR=%.1f toOurL=%.1f toOurR=%.1f",
-                        tag, fmt_vec(at),
-                        previous and string.format("%.1f", distance(previous, at)) or "n/a",
-                        distance(at, game_l), distance(at, game_r),
-                        distance(at, our_l), distance(at, our_r)))
-                end
-            end
-        end
-    end
-
-    -- the hero's own component tree, so a weapon parented to a sibling of the body is visible
-    if with_tree then
-        local root = actor_root_of(source)
-        for _, component in ipairs(children_of(root, {})) do
-            trace(string.format("geo[%s] tree %s mesh=%s parent=%s/%s", tag, object_name(component),
-                tostring(part_mesh_name(component)),
-                object_name(try("GetAttachParent", function() return component:GetAttachParent() end)),
-                socket_text_of(component)))
-        end
-    end
-end
-
--- ------------------------------------------------------------------- materials
---
--- The 8 slots reuse the game's own material instances, so the textures they sample are the only thing
--- this mod changes. Their *parameters* still carry the hero's settings, and one of them dominated the
--- colour: `MI_ZeroHun_Cloth_02_b` (the dress slot) enables the hero's fabric overlay layer
--- (`Overlay` = true, `DetailColor` = T_Fabric_C, `ColorTiling` = 40) at `BaseColor Intensity` = 0.5,
--- i.e. the albedo is blended 1:1 with a grey fabric noise - which is what made the red dress look
--- faded and hid its pattern. The fix is at asset level: the dress borrows `MI_ZeroHun_Cloth_05_b`
--- instead, which is the same material family without the overlay (see ue/scripts/build_mod_assets.py).
---
--- Parameters were meant to be corrected at runtime through a dynamic material instance, but
--- `CreateAndSetMaterialInstanceDynamic` reached through Lua produced an instance of the *wrong*
--- parent material (log: `MID_MI_ZeroHun_Head_Injured30_...` on the dress slot) and its
--- `Get/SetScalarParameterValue` never read back, so that route is a dead end. What is left is a
--- read-only probe: which material each slot actually renders with.
-
-local function report_materials(component)
-    local count = try("GetNumMaterials", function() return component:GetNumMaterials() end) or 0
-    trace("material: " .. count .. " slots on " .. tostring(short_name(full_name(component))))
-    for index = 0, count - 1 do
-        local material = try("GetMaterial", function() return component:GetMaterial(index) end)
-        trace(string.format("material[%d] %s", index, object_name(material)))
-        -- The parent chain is what decides the shader: an eye slot on a refractive master material
-        -- behaves nothing like a flat toon eye, and that is invisible from the instance name alone.
-        local node = material
-        for depth = 1, 4 do
-            local parent = node ~= nil and usable(soft(function() return node.Parent end)) or nil
-            if parent == nil then break end
-            trace(string.format("material[%d]   parent[%d] %s", index, depth, object_name(parent)))
-            node = parent
-        end
-    end
-end
-
--- Which material instances and textures this build of the game actually ships. The editor only holds
--- the placeholder instances this project creates (the real ones live in the game's paks), so the catalog
--- can only be read from inside a running game. Used to answer two questions that decide the eye fix:
---   * which host instance the eye slot really is, and what its parent material is,
---   * whether a spare hero-only albedo texture path exists for the eye (every slot needs its own, or two
---     slots render the same image).
--- Dev only: one-shot, filtered, and it walks the object array once.
-local CATALOG_KEYWORDS = { "eye", "cap", "cloth", "head", "face", "groom", "brow" }
-
-local function matches_catalog_keyword(name)
-    if name == nil then return false end
-    local lowered = name:lower()
-    for _, keyword in ipairs(CATALOG_KEYWORDS) do
-        if lowered:find(keyword, 1, true) then return true end
-    end
-    return false
-end
-
-local function report_material_catalog()
-    if not config.report_material_catalog then return end
-    local ok, err = pcall(function()
-        local instances = try("FindAllOf MaterialInstanceConstant",
-            function() return FindAllOf("MaterialInstanceConstant") end)
-        local listed = 0
-        if type(instances) == "table" then
-            for _, obj in pairs(instances) do
-                if usable(obj) and not is_cdo(obj) then
-                    local name = full_name(obj)
-                    if matches_catalog_keyword(name) then
-                        local parent = usable(soft(function() return obj.Parent end))
-                        trace(string.format("catalog MI  %s  parent=%s",
-                            tostring(full_name(obj)),
-                            parent ~= nil and object_name(parent) or "<none>"))
-                        listed = listed + 1
-                        if listed >= 120 then break end
-                    end
-                end
-            end
-        end
-        trace("catalog: " .. listed .. " material instance(s)")
-
-        local textures = try("FindAllOf Texture2D",
-            function() return FindAllOf("Texture2D") end)
-        local tex_listed = 0
-        if type(textures) == "table" then
-            for _, obj in pairs(textures) do
-                if usable(obj) and not is_cdo(obj) then
-                    local name = full_name(obj)
-                    if matches_catalog_keyword(name) then
-                        local x = tonumber(soft(function()
-                            return obj.Blueprint_GetSurfaceWidth() end) or 0) or 0
-                        local y = tonumber(soft(function()
-                            return obj.Blueprint_GetSurfaceHeight() end) or 0) or 0
-                        trace(string.format("catalog TEX %s  %dx%d", tostring(object_name(obj)), x, y))
-                        tex_listed = tex_listed + 1
-                        if tex_listed >= 160 then break end
-                    end
-                end
-            end
-        end
-        trace("catalog: " .. tex_listed .. " texture(s)")
-    end)
-    if not ok then trace("catalog: failed " .. tostring(err)) end
-end
-
--- Which hero material instance samples which albedo texture cannot be read from Lua (the parameter
--- arrays are not exposed), and the editor only holds this project's placeholders. So the instance is
--- identified by eye instead: this steps a slot through every matching material instance the running game
--- has, and the one that makes the slot show the intended image is the answer.
---
--- Background: the eye card renders correctly with the mapping in build_mod_assets.py (proved offline
--- with tools/render_slot_preview.py - flat emission render of the mesh with the same slot->image map
--- shows light-blue eyes), so what is left is the *instance*. The hero's head slot is normally driven by
--- a plain `MI_ZeroHun_Head_*`; the two we tried are `Head_health` / `Head_Injured30`, both of which are
--- the damage-status variants the game swaps in when the hero is hurt, so they paint the card dark.
--- This probe finds the plain one by name and confirms it on screen. Dev only, hotkey driven.
-local material_probe = { index = 0, candidates = nil, original = nil, slots = {} }
-
-local function material_probe_candidates()
-    if material_probe.candidates ~= nil then return material_probe.candidates end
-    local list = {}
-    local filter = config.material_probe_filter
-    local instances = try("FindAllOf MaterialInstanceConstant",
-        function() return FindAllOf("MaterialInstanceConstant") end)
-    if type(instances) == "table" then
-        for _, obj in pairs(instances) do
-            if usable(obj) and not is_cdo(obj) then
-                local name = full_name(obj)
-                if name ~= nil and name:find("MI_ZeroHun_", 1, true)
-                    and (filter == nil or name:find(filter, 1, true)) then
-                    list[#list + 1] = obj
-                end
-            end
-        end
-    end
-    table.sort(list, function(a, b)
-        return tostring(full_name(a)) < tostring(full_name(b))
-    end)
-    material_probe.candidates = list
-    trace(string.format("probe: %d candidate(s) for filter %s", #list, tostring(filter)))
-    for index, obj in ipairs(list) do
-        trace(string.format("probe:   [%d] %s", index, tostring(full_name(obj))))
-    end
-    return list
-end
-
--- Records what the mesh is wearing before the first probe step, so cycling wraps back to it. The
--- originals are also logged: that line is the ground truth for which instance the build assigned.
-local function material_probe_capture(carrier, slots)
-    if material_probe.original ~= nil then return end
-    material_probe.slots = slots
-    material_probe.original = {}
-    for _, slot in ipairs(slots) do
-        local had = soft(function() return carrier:GetMaterial(slot) end)
-        material_probe.original[slot] = usable(had) and had or nil
-        trace(string.format("probe: slot %d originally %s", slot,
-            usable(had) and tostring(full_name(had)) or "<none>"))
-    end
-end
-
-local function material_probe_apply(index)
-    local list = material_probe_candidates()
-    if #list == 0 then
-        trace("probe: no candidates")
-        return
-    end
-    local carrier = state.body or state.carrier
-    if not valid(carrier) then
-        trace("probe: no carrier yet")
-        return
-    end
-    local slots = config.material_probe_slots or { 6 }
-    material_probe_capture(carrier, slots)
-    -- index 0 puts the shipped assignment back, so a wrap-around leaves no doubt about what "correct"
-    -- looked like; 1..#list walk the candidates in name order.
-    if index < 0 or index > #list then index = 0 end
-    material_probe.index = index
-    local material = index == 0 and nil or list[index]
-    for _, slot in ipairs(slots) do
-        local want = material or material_probe.original[slot]
-        if want ~= nil then
-            pcall(function() carrier:SetMaterial(slot, want) end)
-        end
-    end
-    trace(string.format("probe: slots %s -> %s  [%d/%d]", table.concat(slots, ","),
-        material ~= nil and tostring(full_name(material)) or "<shipped>", index, #list))
-end
-
--- Last dotted/colon-separated part of an object or property name.
-local function last_part(text)
-    if type(text) ~= "string" then return nil end
-    local tail = text:match("([%w_]+)$")
-    return tail or text
-end
-
--- Dumps the KawaiiPhysics nodes the engine instantiated for our post-process graph (dev diagnostic,
--- see config.report_physics_nodes). Three outcomes are possible and all three look identical in game
--- until you look at the numbers:
---   * no "kawaii" property on the generated class  -> the graph did not even load the nodes
---   * property present but its ModifyBones is empty -> the game's fork did not accept our root bone
---   * property present with a bone list            -> the node is simulating
-local function report_physics_nodes(component)
-    local instance = soft(function() return component:GetPostProcessInstance() end)
-    if not usable(instance) then
-        trace("kawaii: no post-process anim instance yet")
-        return false
-    end
-    local class = soft(function() return instance:GetClass() end)
-    if not usable(class) then
-        trace("kawaii: post-process instance has no class")
-        return true
-    end
-    trace("kawaii: instance=" .. object_name(instance) .. " class=" .. object_name(class))
-
-    local found, swept = 0, 0
-    local spheres_dumped = false
-    local ok, err = pcall(function()
-        class:ForEachProperty(function(property)
-            swept = swept + 1
-            local text = nil
-            pcall(function() text = property:GetFullName() end)
-            if type(text) ~= "string" then
-                pcall(function() text = tostring(property) end)
-            end
-            if type(text) == "string" and text:lower():find("kawaii", 1, true) then
-                found = found + 1
-                local name = last_part(text)
-                trace("kawaii: node " .. tostring(name))
-                local value = soft(function() return instance[name] end)
-
-                -- The simulated bones carry the live positions the node is working with, so they are
-                -- the only way to see whether a collision sphere is actually keeping a skirt bone out
-                -- of a leg (they are in the same component space as the sphere Locations).
-                local bones = soft(function() return value.ModifyBones end)
-                local bone_count = tonumber(soft(function() return #bones end)) or 0
-                local parts = {}
-                for index = 1, math.min(bone_count, 5) do
-                    local bone = soft(function() return bones[index] end)
-                    local at = bone and soft(function() return bone.Location end)
-                    parts[#parts + 1] = fmt_vec(at)
-                end
-                local last_bone = soft(function() return bones[bone_count] end)
-                local last_at = last_bone and soft(function() return last_bone.Location end)
-                trace(string.format("kawaii: %s bones=%d [%s] last=%s", name, bone_count,
-                    table.concat(parts, " "), tostring(fmt_vec(last_at))))
-
-                -- one skirt node's spheres is enough to read the geometry; printing every node's 24
-                -- entries buries the rest of the log (every skirt node carries the same sphere set)
-                if not spheres_dumped then
-                    local limits = soft(function() return value.SphericalLimits end)
-                    local count = soft(function() return #limits end)
-                    if count and tonumber(count) and tonumber(count) >= 10 then
-                        spheres_dumped = true
-                        trace("kawaii:   " .. name .. " has " .. tostring(count) .. " spheres")
-                        for index = 1, math.min(tonumber(count) or 0, 26) do
-                            local sphere = soft(function() return limits[index] end)
-                            if sphere ~= nil then
-                                local at = soft(function() return sphere.Location end)
-                                local radius = soft(function() return sphere.Radius end)
-                                trace(string.format("kawaii:     [%d] %s r=%s", index, fmt_vec(at),
-                                    tostring(radius)))
-                            end
-                        end
-                    end
-                end
-
-                -- Capsules are the colliders that hold the skirt off the legs. The editor preview shows
-                -- them working, so if the game behaves differently the question is whether the loaded
-                -- node still has them and whether their driving bone is bound - both are printed here.
-                local capsules = soft(function() return value.CapsuleLimits end)
-                local capsule_count = tonumber(soft(function() return #capsules end)) or 0
-                trace(string.format("kawaii:   %s capsules=%d", name, capsule_count))
-                for index = 1, math.min(capsule_count, 8) do
-                    local capsule = soft(function() return capsules[index] end)
-                    if capsule ~= nil then
-                        local driving = soft(function() return capsule.DrivingBone end)
-                        local bone_name = driving and soft(function() return driving.BoneName end)
-                        local at = soft(function() return capsule.Location end)
-                        local radius = soft(function() return capsule.Radius end)
-                        local length = soft(function() return capsule.Length end)
-                        local enabled = soft(function() return capsule.bEnable end)
-                        trace(string.format("kawaii:     cap[%d] bone=%s enabled=%s r=%s len=%s at=%s",
-                            index, tostring(bone_name), tostring(enabled), tostring(radius),
-                            tostring(length), tostring(fmt_vec(at))))
-                    end
-                end
-            end
-        end)
-    end)
-    trace(string.format("kawaii: sweep ok=%s props=%d kawaii=%d err=%s",
-        tostring(ok), swept, found, tostring(err)))
-    return true
-end
-
-
--- Per-frame recorder (dev only, bound to a key): samples the Kawaii node's own bone list every frame
--- for a few seconds. Two numbers per frame tell the whole story of the "cloth twitches when the
--- animation changes" bug:
---   * the first bone of the chain (the pelvis / head) is kinematic, so it follows the pose exactly -
---     a jump there means the *animation* jumped (retarget output, blend, or a one-frame glitch)
---   * the second bone is simulated, so a jump there while the pelvis is smooth means the *physics
---     state* was kicked or reset
-local frame_probe = { active = false }
-
-local function kawaii_bone_list(instance, property_name)
-    local value = soft(function() return instance[property_name] end)
-    if not value then return nil end
-    return soft(function() return value.ModifyBones end)
-end
-
--- Reads back the values the *loaded* node really holds. This game ships its own fork of KawaiiPhysics
--- (it has no AdditionalRootBones but has bEnablePhysicsField), and a property the fork does not know is
--- silently dropped when the blueprint loads - so an authored setting is not proof that the running node
--- uses it. SimulationSpace in particular is an enum whose numbering is not guaranteed to match.
-local function report_physics_settings(instance, name)
-    local node = soft(function() return instance[name] end)
-    if node == nil then return end
-    local settings = soft(function() return node.PhysicsSettings end)
-    local function field(tbl, key)
-        return soft(function() return tbl[key] end)
-    end
-    trace(string.format(
-        "probe: %s space=%s base=%s teleportDist=%s teleportRot=%s dummy=%s fps=%s bones=%s",
-        name,
-        tostring(field(node, "SimulationSpace")),
-        tostring(field(field(node, "SimulationBaseBone"), "BoneName")),
-        tostring(field(node, "TeleportDistanceThreshold")),
-        tostring(field(node, "TeleportRotationThreshold")),
-        tostring(field(node, "DummyBoneLength")),
-        tostring(field(node, "TargetFramerate")),
-        tostring(#(kawaii_bone_list(instance, name) or {}))))
-    trace(string.format(
-        "probe: %s damping=%s stiffness=%s limitAngle=%s radius=%s dampLoc=%s dampRot=%s wind=%s worldCol=%s",
-        name,
-        tostring(field(settings, "Damping")),
-        tostring(field(settings, "Stiffness")),
-        tostring(field(settings, "LimitAngle")),
-        tostring(field(settings, "Radius")),
-        tostring(field(settings, "WorldDampingLocation")),
-        tostring(field(settings, "WorldDampingRotation")),
-        tostring(field(node, "bEnableWind")),
-        tostring(field(node, "bAllowWorldCollision"))))
-end
-
-local function kawaii_node_names(instance)
-    local class = soft(function() return instance:GetClass() end)
-    if not usable(class) then return {} end
-    local names = {}
-    pcall(function()
-        class:ForEachProperty(function(property)
-            local text = nil
-            pcall(function() text = property:GetFullName() end)
-            if type(text) == "string" and text:lower():find("kawaii", 1, true) then
-                local name = last_part(text)
-                local count = tonumber(soft(function() return #(kawaii_bone_list(instance, name) or {}) end))
-                if count and count > 0 then
-                    names[#names + 1] = { name = name, bones = count }
-                end
-            end
-        end)
-    end)
-    table.sort(names, function(a, b) return a.bones > b.bones end)
-    return names
-end
-
-local function start_frame_probe()
-    if frame_probe.active then return end
-    local body = state.body or state.carrier
-    local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
-    if not usable(instance) then
-        trace("probe: no post-process instance yet")
-        return
-    end
-    local nodes = kawaii_node_names(instance)
-    if #nodes == 0 then
-        trace("probe: no kawaii node found")
-        return
-    end
-    for _, node in ipairs(nodes) do
-        report_physics_settings(instance, node.name)
-    end
-
-    -- For every node, the worst deviation of any of its simulated bones from that bone's pose. That is
-    -- the number a twitch is made of: a bone that hangs far from its pose and then collapses onto it in
-    -- one frame is a snap, and the same value swinging back and forth over a few frames is a vibration.
-    frame_probe.active = true
-    local stats = {}
-    for _, node in ipairs(nodes) do
-        stats[node.name] = { deviation = 0.0, max = 0.0, snaps = 0, swings = 0, previous = 0.0,
-            frames = 0, maxStep = 0.0, lurches = 0, last = nil, lastBone = 0 }
-    end
-    local frames, limit = 0, 120
-    trace("probe: recording " .. limit .. " game-thread samples across " .. #nodes .. " node(s)")
-    local function sample()
-        if not frame_probe.active then return true end
-        frames = frames + 1
-        for _, node in ipairs(nodes) do
-            local stat = stats[node.name]
-            local bones = kawaii_bone_list(instance, node.name)
-            local worst_now, sum_now, count = 0.0, 0.0, 0
-            local tip = nil
-            if bones then
-                for index = 1, node.bones do
-                    local bone = soft(function() return bones[index] end)
-                    local at = bone and vec_of(soft(function() return bone.Location end))
-                    local pose = bone and vec_of(soft(function() return bone.PoseLocation end))
-                    if at and pose then
-                        local delta = sub(at, pose)
-                        local length = math.sqrt(delta.X ^ 2 + delta.Y ^ 2 + delta.Z ^ 2)
-                        worst_now = math.max(worst_now, length)
-                        sum_now = sum_now + length
-                        count = count + 1
-                    end
-                    if index == node.bones then tip = at end
-                end
-            end
-            stat.frames = stat.frames + 1
-            stat.deviation = stat.deviation + (count > 0 and (sum_now / count) or 0.0)
-            stat.max = math.max(stat.max, worst_now)
-            if stat.previous > 5.0 and worst_now < 1.0 then stat.snaps = stat.snaps + 1 end
-            if math.abs(worst_now - stat.previous) > 3.0 then stat.swings = stat.swings + 1 end
-            stat.previous = worst_now
-            -- The last bone of the chain is the visible tip, so its per-frame movement is the best proxy
-            -- for "how far the fabric lurched this frame".
-            if tip and stat.last then
-                local step = sub(tip, stat.last)
-                local stepLength = math.sqrt(step.X ^ 2 + step.Y ^ 2 + step.Z ^ 2)
-                stat.maxStep = math.max(stat.maxStep, stepLength)
-                if stepLength > 3.0 then stat.lurches = stat.lurches + 1 end
-            end
-            stat.last = tip
-        end
-        if frames >= limit then
-            frame_probe.active = false
-            for _, node in ipairs(nodes) do
-                local stat = stats[node.name]
-                trace(string.format(
-                    "probe: %s bones=%d avgDev=%.2f maxDev=%.2f maxTipStep=%.2f lurchFrames=%d/%d",
-                    node.name, node.bones, stat.frames > 0 and (stat.deviation / stat.frames) or 0.0,
-                    stat.max, stat.maxStep, stat.lurches, stat.frames))
-            end
-            return true
-        end
-        return false
-    end
-
-    -- LoopInGameThreadWithDelay, not LoopAsync: the async loop is not synchronised with the animation
-    -- update, so reading several bone properties in one iteration could straddle a frame and invent a
-    -- jump that never happened (the earlier version counted a 24 cm jump while the pose stood still,
-    -- which is not physical).
-    if type(LoopInGameThreadWithDelay) == "function" then
-        LoopInGameThreadWithDelay(0, function()
-            local ok, err = pcall(sample)
-            if not ok then
-                frame_probe.active = false
-                trace("probe error: " .. tostring(err))
-            end
-        end)
-    else
-        trace("probe: LoopInGameThreadWithDelay missing")
-    end
-end
-
--- Live physics tuning (dev only). Rebuilding the blueprint to try one value costs a full cook, so the
--- node struct is written through reflection instead: ImportText only touches the members named in the
--- text and leaves RootBone / ModifyBones / ExcludeBones alone.
---
--- Measured with this ladder: at Damping=1/Stiffness=1 the "cloth lurches left-right when the animation
--- switches" symptom disappears completely, so the swing is plain physics inertia and Damping is the
--- knob that removes it. The ladder walks that knob up until the symptom is gone while some motion stays.
-local PHYSICS_PRESETS = {
-    -- the ladder brackets the baked value (0.92): stiff enough that a one-frame animation switch does
-    -- not turn into a visible lurch, soft enough that the fabric still moves
-    ladder1 = "(PhysicsSettings=(Damping=0.80,Stiffness=0.80,WorldDampingLocation=1.0,"
-        .. "WorldDampingRotation=1.0,LimitAngle=0.0))",
-    ladder2 = "(PhysicsSettings=(Damping=0.88,Stiffness=0.88,WorldDampingLocation=1.0,"
-        .. "WorldDampingRotation=1.0,LimitAngle=0.0))",
-    ladder3 = "(PhysicsSettings=(Damping=0.92,Stiffness=0.92,WorldDampingLocation=1.0,"
-        .. "WorldDampingRotation=1.0,LimitAngle=0.0))",
-    ladder4 = "(PhysicsSettings=(Damping=0.96,Stiffness=0.96,WorldDampingLocation=1.0,"
-        .. "WorldDampingRotation=1.0,LimitAngle=0.0))",
-    rigid = "(PhysicsSettings=(Damping=1.0,Stiffness=1.0,WorldDampingLocation=1.0,"
-        .. "WorldDampingRotation=1.0,LimitAngle=0.0))",
-    natural = "(PhysicsSettings=(Damping=0.55,Stiffness=0.45,WorldDampingLocation=1.0,"
-        .. "WorldDampingRotation=1.0,LimitAngle=0.0))",
-    planar_x = "(PlanarConstraint=X,PhysicsSettings=(Damping=0.80,Stiffness=0.80,"
-        .. "WorldDampingLocation=1.0,WorldDampingRotation=1.0,LimitAngle=0.0))",
-    planar_y = "(PlanarConstraint=Y,PhysicsSettings=(Damping=0.80,Stiffness=0.80,"
-        .. "WorldDampingLocation=1.0,WorldDampingRotation=1.0,LimitAngle=0.0))",
-    planar_z = "(PlanarConstraint=Z,PhysicsSettings=(Damping=0.80,Stiffness=0.80,"
-        .. "WorldDampingLocation=1.0,WorldDampingRotation=1.0,LimitAngle=0.0))",
-}
-
-local PHYSICS_PRESET_KEYS = {
-    { key = "F1", preset = "ladder1" },
-    { key = "F2", preset = "ladder2" },
-    { key = "F3", preset = "ladder3" },
-    { key = "F4", preset = "ladder4" },
-    { key = "F5", preset = "rigid" },
-    { key = "F6", preset = "natural" },
-    -- planar constraint: the bone motion is projected into a plane whose normal is one of the parent
-    -- bone's pose axes. This skeleton's lateral axis is X in component space (the left thigh sits at
-    -- x=+8.65 while the shin runs along -Y), so "plane=X" is the candidate that should keep the
-    -- forward/back sway of walking while removing the left-right swing that reads as a twitch.
-    -- The values below are deliberately loose (0.80) so there is visible motion to judge.
-    { key = "F7", preset = "planar_x" },
-    { key = "F8", preset = "planar_y" },
-    { key = "F9", preset = "planar_z" },
-}
-
-local function apply_physics_preset(preset_name)
-    local text = PHYSICS_PRESETS[preset_name]
-    if not text then
-        trace("physics preset: unknown " .. tostring(preset_name))
-        return
-    end
-    local body = state.body or state.carrier
-    local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
-    if not usable(instance) then
-        trace("physics preset: no post-process instance")
-        return
-    end
-    local nodes = kawaii_node_names(instance)
-    if #nodes == 0 then
-        trace("physics preset: no kawaii nodes")
-        return
-    end
-    local applied = 0
-    for _, node in ipairs(nodes) do
-        if set_property(instance, node.name, text) then applied = applied + 1 end
-    end
-    trace(string.format("physics preset %s applied to %d/%d node(s)", preset_name, applied, #nodes))
-end
+local diagnostics = assert(loadfile(mod_dir .. "/Scripts/diagnostics.lua"))()({
+    actor_root_of = actor_root_of,
+    bone_count = bone_count,
+    bone_world = bone_world,
+    children_of = children_of,
+    component_location = component_location,
+    config = config,
+    distance = distance,
+    fmt_vec = fmt_vec,
+    full_name = full_name,
+    is_cdo = is_cdo,
+    is_weapon_mesh = is_weapon_mesh,
+    log = log,
+    materials = materials,
+    mesh_of = mesh_of,
+    object_name = object_name,
+    part_mesh_name = part_mesh_name,
+    set_property = set_property,
+    short_name = short_name,
+    socket_text_of = socket_text_of,
+    soft = soft,
+    state = state,
+    sub = sub,
+    trace = trace,
+    try = try,
+    usable = usable,
+    valid = valid,
+    vec_of = vec_of,
+})
 
 local function setup()
     if state.actor_name == nil then return end
@@ -4021,7 +3119,7 @@ local function setup()
     drive_carrier(target)
 
     if config.report_physics_nodes and not state.physics_reported and valid(target) then
-        state.physics_reported = report_physics_nodes(target)
+        state.physics_reported = diagnostics.report_physics_nodes(target)
     end
 
     -- The game re-arms the leader pose after interactive animations / cutscenes; the pose then drops
@@ -4030,21 +3128,21 @@ local function setup()
 
     if config.report_materials and state.aligned and not state.materials_reported and valid(target) then
         state.materials_reported = true
-        report_materials(target)
+        diagnostics.report_materials(target)
     end
 
     -- Separate switch: the catalog is the only place the shipped build's instance names and parents can
     -- be read (the editor only has placeholders), so it must not depend on the slot dump being on.
     if config.report_material_catalog and state.aligned and not state.catalog_reported and valid(target) then
         state.catalog_reported = true
-        report_material_catalog()
+        diagnostics.report_material_catalog()
     end
 
     -- Every scan: the game re-applies its damage/status material on the part we ship, which silently
     -- replaced the dress material (see guard_materials).
     if valid(target) then
-        apply_own_materials(target)
-        guard_materials(target)
+        materials.apply_own(target)
+        materials.guard(target)
     end
 
     if config.force_opaque and not state.opaque_done and valid(target) then
@@ -4091,7 +3189,7 @@ local function setup()
         local mark = marks[state.attach_checks + 1]
         if mark ~= nil and state.tick >= state.carrier_ready_tick + mark then
             state.attach_checks = state.attach_checks + 1
-            report_weapon_attachment("t+" .. mark)
+            diagnostics.report_weapon_attachment("t+" .. mark)
         end
     end
 
@@ -4103,7 +3201,7 @@ local function setup()
 
     -- Logs the full attach chain whenever it changes (draw / sheathe / swap), with the gap between the
     -- weapon's root and the socket it names.
-    watch_weapon_chain()
+    diagnostics.watch_weapon_chain()
 
     if state.aligned then
         anchor_back_items()
@@ -4471,7 +3569,7 @@ local function release_outfit(reason)
 
     -- the part that carried our mesh is an ordinary follower of the body again, without our materials
     if valid(carrier) then
-        remove_our_materials(carrier, full_name(carrier))
+        materials.remove_ours(carrier, full_name(carrier))
         if valid(source) then
             pcall(function() carrier:SetLeaderPoseComponent(source, true, true) end)
         end
@@ -4675,270 +3773,25 @@ end
 -- appearance component; while the previewed outfit is one of `config.outfit_text`, its title /
 -- description are written into the panel's W_UnifiedTextDescription (ItemNameText / DetailText) every
 -- scan, because the wardrobe clears them again on its own refreshes.
-local wardrobe = { hooked = false, outfit = nil, text_tick = nil, panels = nil }
-
-function wardrobe.outfit_name_of(param)
-    local value = soft(function() return param:get() end)
-    if value == nil then return nil end
-    return soft(function() return value:ToString() end) or tostring(value)
-end
-
-function wardrobe.on_outfit_applied(kind, context, id)
-    local comp = soft(function() return context:get() end)
-    local outfit = wardrobe.outfit_name_of(id)
-    local owner = comp and soft(function() return comp:GetOwner() end)
-    local owner_name = owner and full_name(owner) or nil
-    if owner_name ~= nil and owner_name:find("BP_PreviewAppearance_Hun", 1, true) then
-        wardrobe.outfit = outfit
-        wardrobe.text_tick = nil
-        -- remembered so `previewed_outfit` can ask the preview itself every scan: the hook alone missed
-        -- the switch back to a game outfit in game (the panel kept our title on 风雪)
-        wardrobe.comp = full_name(comp)
-        trace_profile(string.format('{"event":"wardrobe_request","kind":%q,"outfit":%q,"actor":%q}',
-            kind, tostring(outfit), tostring(short_name(owner_name))))
-        trace("wardrobe: " .. kind .. " " .. tostring(outfit) .. " on " .. tostring(short_name(owner_name)))
-    end
-end
-
-function wardrobe.hook_wardrobe(comp)
-    if wardrobe.hooked or type(RegisterHook) ~= "function" then return end
-    wardrobe.hooked = true
-    -- the native class's path is read from the component's class chain, not guessed
-    local class = soft(function() return comp:GetClass() end)
-    local native = nil
-    for _ = 1, 8 do
-        if class == nil then break end
-        local name = full_name(class)
-        if name ~= nil and name:find("%.PBZAppearanceComponent$") then
-            native = name:gsub("^%S+%s+", "")
-            break
-        end
-        class = soft(function() return class:GetSuperStruct() end)
-    end
-    if native == nil then
-        trace_problem("wardrobe: PBZAppearanceComponent not found in the class chain, no preview hook")
-        return
-    end
-    -- pre: remembers the request (the meshes are still the old ones); post: the meshes are swapped, our
-    -- band is hidden in the preview or shown again in that same frame (see the preview section below)
-    for _, fn in ipairs({ "EquipOutfit", "ApplyOutfitVisual" }) do
-        local ok, err = pcall(RegisterHook, native .. ":" .. fn, function(context, id)
-            pcall(wardrobe.on_outfit_applied, fn, context, id)
-        end, function(context)
-            local done, problem = pcall(wardrobe.on_outfit_visual_done, fn, context)
-            if not done then trace_problem("wardrobe: post " .. fn .. " failed: " .. tostring(problem)) end
-        end)
-        trace((ok and "wardrobe: hooked " or "wardrobe: hook FAILED ") .. native .. ":" .. fn ..
-            (ok and "" or (" " .. tostring(err))))
-    end
-end
-
--- Writes the previewed outfit's text into the wardrobe panel. The panel widgets are found once per
--- selection (a level-wide object walk, so only while one of our outfits is being previewed) and then
--- re-set every scan; only visible panels are touched.
-function wardrobe.set_widget_text(widget, text, label)
-    if widget == nil or not valid(widget) then return false end
-    for _, fn in ipairs({ "SetDisplayText", "SetText" }) do
-        if soft(function() widget[fn](widget, FText(text)); return true end) then
-            if not wardrobe.reported then trace("wardrobe: " .. label .. " set with " .. fn) end
-            return true
-        end
-    end
-    return false
-end
-
--- The outfit the wardrobe preview wears right now, read from its appearance component; falls back to the
--- last hooked id while the component cannot be read (destroyed with the closed wardrobe, for instance).
-function wardrobe.previewed_outfit()
-    if wardrobe.comp == nil then return wardrobe.outfit end
-    local comp = usable(StaticFindObject(wardrobe.comp))
-    if comp == nil then
-        wardrobe.comp = nil
-        wardrobe.outfit = nil
-        return nil
-    end
-    local current = soft(function() return comp:GetCurrentOutfit():ToString() end)
-    if current ~= nil and current ~= "" and current ~= "None" then
-        if current ~= wardrobe.outfit then
-            trace("wardrobe: preview now wears " .. current)
-            wardrobe.outfit = current
-            wardrobe.text_tick = nil
-        end
-    end
-    return wardrobe.outfit
-end
-
--- Our text may only replace an empty title or our own: the wardrobe writes the title of every game outfit
--- itself, and that must never be overwritten. nil = the title could not be read (then the outfit check
--- alone decides).
-function wardrobe.panel_title(panel)
-    local widget = soft(function() return panel.ItemNameText end)
-    if widget == nil then return nil end
-    return soft(function() return widget:GetText():ToString() end)
-end
-
-function wardrobe.wardrobe_text()
-    local texts = config.outfit_text
-    if type(texts) ~= "table" then return end
-    local outfit = wardrobe.previewed_outfit()
-    local text = outfit and texts[outfit] or nil
-    if text == nil then wardrobe.panels = nil return end
-    if wardrobe.panels == nil or wardrobe.text_tick == nil then
-        wardrobe.text_tick = state.tick
-        wardrobe.panels = {}
-        local objects = try("FindAllOf W_UnifiedTextDescription_C",
-            function() return FindAllOf("W_UnifiedTextDescription_C") end)
-        for _, panel in pairs(type(objects) == "table" and objects or {}) do
-            if usable(panel) and not is_cdo(panel) then
-                wardrobe.panels[#wardrobe.panels + 1] = full_name(panel)
-            end
-        end
-        trace("wardrobe: " .. #wardrobe.panels .. " text panel(s) for " .. wardrobe.outfit)
-    end
-    local written = 0
-    for _, key in ipairs(wardrobe.panels) do
-        local panel = usable(StaticFindObject(key))
-        local title = panel ~= nil and wardrobe.panel_title(panel) or nil
-        local free = title == nil or title == "" or title == (text.name or "")
-        if not free and not wardrobe.reported_busy then
-            wardrobe.reported_busy = true
-            trace("wardrobe: panel already shows '" .. tostring(title) .. "', not overwritten")
-        end
-        if panel ~= nil and free and soft(function() return panel:IsVisible() end) ~= false then
-            local name_ok = wardrobe.set_widget_text(soft(function() return panel.ItemNameText end), text.name or "", "title")
-            local desc_ok = wardrobe.set_widget_text(soft(function() return panel.DetailText end), text.desc or "", "description")
-            if name_ok or desc_ok then written = written + 1 end
-        end
-    end
-    if not wardrobe.reported then
-        wardrobe.reported = true
-        trace("wardrobe: text written to " .. written .. " panel(s)")
-    end
-end
-
--- The wardrobe preview (BP_PreviewAppearance_Hun) is left to the game: for our outfit it shows the game's
--- FengXue body and head (the outfit's pose source), and our band is hidden there, so the preview shows
--- the bald hero in the FengXue outfit rather than Yae over him in a reference pose. Wearing the outfit
--- shows Yae as usual (setup / release_outfit).
---
--- Why body and head are not touched (2.1.15 - 2.1.25, see references/outfit-rows.md): the preview's
--- switch transition spawns its dissolve effects (Niagara, NCO_RebirthBodyMat) only on parts that are
--- visible at that moment and the game waits for that transition. Every way of hiding body and head at
--- runtime left it unfinished (the first switch after opening the wardrobe held ~13 s, every later switch
--- without a dissolve), and replacing them with assets that draw nothing crashed the game once (a blank
--- head without geometry). Hiding the band instead is what an outfit without a band looks like to the
--- game: it is hidden in the post callback of ApplyOutfitVisual, before the appear effects spawn, and
--- shown again in the same place when the band holds a game part.
---
--- The scan only catches a preview the hooks missed (created before they were registered).
-
--- The preview actor when the hook has not reported it yet; never guesses between several.
-function wardrobe.find_preview_component()
-    if state.tick < (wardrobe.discovery_tick or 0) then return nil end
-    wardrobe.discovery_tick = state.tick + 4
-    local found, count = nil, 0
-    for _, comp in pairs(soft(function() return FindAllOf("BP_AppearanceComp_C") end) or {}) do
-        if usable(comp) and not is_cdo(comp) then
-            local owner = soft(function() return comp:GetOwner() end)
-            local name = owner and full_name(owner) or nil
-            if name ~= nil and name:find("BP_PreviewAppearance_Hun", 1, true) then
-                found, count = comp, count + 1
-            end
-        end
-    end
-    if count ~= 1 then return nil end
-    wardrobe.comp = full_name(found)
-    return found
-end
-
-function wardrobe.preview_band()
-    local comp = wardrobe.comp and usable(StaticFindObject(wardrobe.comp)) or nil
-    if comp == nil then comp = wardrobe.find_preview_component() end
-    if comp == nil then return nil end
-    local actor = soft(function() return comp:GetOwner() end)
-    local actor_name = actor and full_name(actor) or nil
-    if actor_name == nil then return nil end
-    local band = usable(StaticFindObject(actor_name:gsub("^%S+%s+", "") .. ".meshBand"))
-    if band == nil or full_name(soft(function() return band:GetOwner() end)) ~= actor_name then return nil end
-    return band
-end
-
-function wardrobe.sync_preview(source)
-    local band = wardrobe.preview_band()
-    if band == nil then return end
-    local ours = is_carrier_mesh(mesh_name(band))
-    local visible = soft(function() return band:IsVisible() end)
-    if ours and visible ~= false then
-        try("preview band hide", function() band:SetVisibility(false, false) end)
-        if wardrobe.band_hidden ~= full_name(band) then
-            wardrobe.band_hidden = full_name(band)
-            trace_problem("wardrobe: our band hidden in the preview (" .. tostring(source) .. ")")
-        end
-    elseif not ours and visible == false and wardrobe.band_hidden == full_name(band) then
-        -- only a band this script hid is shown again: the game hides parts of its own outfits itself
-        try("preview band show", function() band:SetVisibility(true, false) end)
-        wardrobe.band_hidden = nil
-        trace_problem("wardrobe: preview band shown again (" .. tostring(mesh_name(band)) .. ", " ..
-            tostring(source) .. ")")
-    end
-end
-
-function wardrobe.preview_tick()
-    wardrobe.sync_preview("scan")
-end
-
--- Post callback of EquipOutfit / ApplyOutfitVisual: the meshes are swapped by now and the preview actor
--- is still hidden. Only the preview actor's component counts.
-function wardrobe.on_outfit_visual_done(fn, context)
-    local comp = soft(function() return context:get() end)
-    local owner = comp and soft(function() return comp:GetOwner() end)
-    local owner_name = owner and full_name(owner) or nil
-    if owner_name == nil or not owner_name:find("BP_PreviewAppearance_Hun", 1, true) then return end
-    wardrobe.comp = full_name(comp)
-    wardrobe.sync_preview(fn)
-end
-
--- An outfit of our own (config.unlock_outfits, rows added by the mod's outfit table container) is owned
--- by nobody: the wardrobe would show it locked. The player's appearance component grants it once per
--- session - the same UnlockOutfit the game calls for its own rewards, so it is stored in the save like
--- them. Looked up by owner = the player's pawn; `FindAllOf` is a level-wide walk, so it is retried rarely
--- and never again once every id is owned.
-function wardrobe.unlock_outfits()
-    local ids = config.unlock_outfits
-    if type(ids) ~= "table" or #ids == 0 or state.outfits_unlocked then return end
-    if state.tick < (state.unlock_next_tick or 0) then return end
-    state.unlock_next_tick = state.tick + (config.unlock_retry_scans or 20)
-    local pawn = resolve_player_pawn()
-    if pawn == nil then return end
-    local pawn_name = full_name(pawn)
-    local comps = try("FindAllOf BP_AppearanceComp_C",
-        function() return FindAllOf("BP_AppearanceComp_C") end)
-    if type(comps) ~= "table" then return end
-    for _, comp in pairs(comps) do
-        if usable(comp) and not is_cdo(comp) then
-            local owner = soft(function() return comp:GetOwner() end)
-            if owner ~= nil and full_name(owner) == pawn_name then
-                wardrobe.hook_wardrobe(comp)
-                local owned = 0
-                for _, id in ipairs(ids) do
-                    local name = FName(id)
-                    if try("IsOutfitOwned", function() return comp:IsOutfitOwned(name) end) == true then
-                        owned = owned + 1
-                    else
-                        try("UnlockOutfit", function() comp:UnlockOutfit(name) end)
-                        local now = try("IsOutfitOwned", function() return comp:IsOutfitOwned(name) end) == true
-                        if now then owned = owned + 1 end
-                        trace_problem("outfit: unlock " .. id .. (now and " ok" or " FAILED (not in the table?)"))
-                    end
-                end
-                state.unlock_failures = owned == #ids and 0 or (state.unlock_failures or 0) + 1
-                -- done, or the rows are not in the table (outfit container not installed): stop trying
-                if owned == #ids or state.unlock_failures >= 3 then state.outfits_unlocked = true end
-                return
-            end
-        end
-    end
-end
+local wardrobe = assert(loadfile(mod_dir .. "/Scripts/wardrobe.lua"))()({
+    state = state,
+    config = config,
+    soft = soft,
+    try = try,
+    usable = usable,
+    valid = valid,
+    is_cdo = is_cdo,
+    full_name = full_name,
+    short_name = short_name,
+    mesh_name = mesh_name,
+    is_carrier_mesh = is_carrier_mesh,
+    resolve_player_pawn = resolve_player_pawn,
+    trace = trace,
+    trace_problem = trace_problem,
+    trace_profile = trace_profile,
+    materials = materials,
+    keep_ticking = keep_ticking,
+})
 
 local function scan()
     if not state.enabled then return end
@@ -5080,9 +3933,9 @@ local function boot()
                 if key then
                     pcall(RegisterKeyBind, key, function()
                         if type(ExecuteInGameThread) == "function" then
-                            ExecuteInGameThread(function() apply_physics_preset(preset) end)
+                            ExecuteInGameThread(function() diagnostics.apply_physics_preset(preset) end)
                         else
-                            apply_physics_preset(preset)
+                            diagnostics.apply_physics_preset(preset)
                         end
                     end)
                 end
@@ -5093,7 +3946,7 @@ local function boot()
             if probe_key then
                 pcall(RegisterKeyBind, probe_key, function()
                     local step = function()
-                        material_probe_apply((material_probe.index or 0) + 1)
+                        diagnostics.material_probe_next()
                     end
                     if type(ExecuteInGameThread) == "function" then
                         ExecuteInGameThread(step)
@@ -5106,9 +3959,9 @@ local function boot()
         if config.report_physics_frames and Key[config.physics_probe_key] then
             pcall(RegisterKeyBind, Key[config.physics_probe_key], function()
                 if type(ExecuteInGameThread) == "function" then
-                    ExecuteInGameThread(start_frame_probe)
+                    ExecuteInGameThread(diagnostics.start_frame_probe)
                 else
-                    start_frame_probe()
+                    diagnostics.start_frame_probe()
                 end
             end)
         end

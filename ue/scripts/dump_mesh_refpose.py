@@ -11,7 +11,7 @@ import sys
 
 import unreal
 
-ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 argv = []
 try:
     argv = [a for a in sys.argv if a and not a.startswith("-")]

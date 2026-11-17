@@ -147,7 +147,9 @@ if LAYOUT_PATH:
     if not SLOTS or any(len(entry) != 4 for entry in TEXTURES):
         raise SystemExit("material layout %s: needs slots and 4-field textures" % LAYOUT_PATH)
 
-RESULT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod\extract\ue-buildassets-result.txt"
+import os as _os_path
+_REF_ROOT = _os_path.environ.get("PBZ_REF_ROOT") or _os_path.path.dirname(_os_path.path.dirname(_os_path.path.dirname(_os_path.path.abspath(__file__))))
+RESULT = _os_path.path.join(_REF_ROOT, "extract", "ue-buildassets-result.txt")
 
 # Overrides an earlier version of this file created and that must never ship again. The cook stages
 # every asset that is on disk, whether or not this run imports it, so a removed override stays in the

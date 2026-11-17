@@ -11,7 +11,7 @@ import os
 import unreal
 
 EAL = unreal.EditorAssetLibrary
-ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RESULT = os.path.join(ROOT, "extract", "ue-outfit-icon-result.txt")
 ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
 FOLDER = ASSET_ROOT + "/Outfit"

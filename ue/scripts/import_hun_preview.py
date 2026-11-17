@@ -15,7 +15,7 @@ import unreal
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
+ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_Body.fbx").replace("\\", "/")
 DEST = "/Game/Korinsna/Source"
 NAME = "HunSkin"
