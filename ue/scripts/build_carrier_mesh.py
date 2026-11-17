@@ -41,10 +41,11 @@ LEGACY_CARRIERS = (
     DEFAULT_CARRIER,
     "/HuaShira/Characters/Hero/Hero_Hun_FengXueDaoke/Cloth/Hun_FengXueDaoKe_Hair_Band",
 )
+ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
 DEST, NAME = CARRIER.rsplit("/", 1)
-SKELETON = "/Game/Korinsna/SK_Korinsna_Skeleton"
-ANIM_BP = "/Game/Korinsna/ABP_Korinsna_Retarget"
-TARGET_MESH = "/Game/Korinsna/SK_Korinsna"
+SKELETON = ASSET_ROOT + "/SK_Korinsna_Skeleton"
+ANIM_BP = ASSET_ROOT + "/ABP_Korinsna_Retarget"
+TARGET_MESH = ASSET_ROOT + "/SK_Korinsna"
 
 lines = []
 

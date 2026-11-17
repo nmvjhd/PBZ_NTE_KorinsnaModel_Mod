@@ -12,11 +12,12 @@ ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 OUT = os.path.join(ROOT, "extract", "ue-retarget-check.txt")
 EAL = unreal.EditorAssetLibrary
 
-ANIM_BP = "/Game/Korinsna/ABP_Korinsna_Retarget"
-RETARGETER = "/Game/Korinsna/RTG_HunToKorinsna"
+ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+ANIM_BP = ASSET_ROOT + "/ABP_Korinsna_Retarget"
+RETARGETER = ASSET_ROOT + "/RTG_HunToKorinsna"
 CARRIER = os.environ.get("PBZ_CARRIER_PATH") or "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
 SOURCE_MESH = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Body_Simple"
-STANDALONE = "/Game/Korinsna/SK_Korinsna"
+STANDALONE = ASSET_ROOT + "/SK_Korinsna"
 
 lines = []
 

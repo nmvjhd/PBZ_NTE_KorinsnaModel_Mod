@@ -9,8 +9,9 @@ import unreal
 ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 OUT = os.path.join(ROOT, "extract", "ue-retarget-verify.txt")
 
-RETARGETER = "/Game/Korinsna/RTG_HunToKorinsna"
-ANIM_BP = "/Game/Korinsna/ABP_Korinsna_Retarget"
+ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+RETARGETER = ASSET_ROOT + "/RTG_HunToKorinsna"
+ANIM_BP = ASSET_ROOT + "/ABP_Korinsna_Retarget"
 
 lines = []
 

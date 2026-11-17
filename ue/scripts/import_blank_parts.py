@@ -30,6 +30,8 @@ BLANK_FBX = os.path.join(ROOT, "blender", "out", "BlankPart.fbx").replace("\\", 
 # the body needs its own blank mesh: one built from the game's own bone hierarchy, so its bone list
 # matches the real body exactly (see the note on BLANKED)
 BLANK_BODY_FBX = os.path.join(ROOT, "blender", "out", "BlankBody.fbx").replace("\\", "/")
+# one sub-micrometre triangle on the hero skeleton (blender/scripts/make_blank_head.py)
+BLANK_HEAD_FBX = os.path.join(ROOT, "blender", "out", "BlankHead.fbx").replace("\\", "/")
 # the shipped body mesh resolves to 274 bones at runtime (265 real + 9 virtual from the skeleton)
 EXPECTED_BODY_BONES = 274
 RESULT = os.path.join(ROOT, "extract", "ue-blank-result.txt")
@@ -141,8 +143,27 @@ def blank(folder, name, fbx):
     finally:
         subsystem.destroy_actor(actor)
 
-    log("blanked  %s (slots=%d, bones=%s, skeleton=%s)"
-        % (path, len(slots), bones, actual_path))
+    # A mesh without geometry crashes the game: Niagara's skeletal mesh sampling (the wardrobe's appear
+    # effect) then creates a zero-sized 'SkeletalMeshGpuDynamicBuffer', a fatal error (2.1.25, whose
+    # 0.0001 cm head triangle the FBX import dropped as degenerate).
+    verts = None
+    for api in ("SkeletalMeshEditorSubsystem", "EditorSkeletalMeshLibrary"):
+        try:
+            owner = (unreal.get_editor_subsystem(getattr(unreal, api)) if api.endswith("Subsystem")
+                     else getattr(unreal, api))
+            verts = owner.get_num_verts(mesh, 0)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if verts is None:
+        log("FAILED   %s: vertex count not readable" % path)
+        return False
+    if verts <= 0:
+        log("FAILED   %s has no geometry (LOD0 vertices=%d)" % (path, verts))
+        return False
+
+    log("blanked  %s (slots=%d, bones=%s, verts=%s, skeleton=%s)"
+        % (path, len(slots), bones, verts, actual_path))
 
     # the importer drops a throwaway skeleton package next to the mesh
     for leftover in (folder + "/" + name + "_Skeleton",):
@@ -166,6 +187,18 @@ def main():
             log("restored %s (override deleted)" % restored)
         else:
             log("FAILED   could not delete %s" % restored)
+
+    # PBZ_BLANK_HEAD_PATH: a blank head of our own for an outfit of our own (the outfit table points its
+    # head row here). The game gives head slot 0 a skin material whatever the mesh carries, so the head
+    # can only disappear by having no area; hiding it at runtime broke the wardrobe's dissolve transition.
+    head = os.environ.get("PBZ_BLANK_HEAD_PATH")
+    if head:
+        folder, name = head.rsplit("/", 1)
+        if not os.path.isfile(BLANK_HEAD_FBX):
+            raise SystemExit("missing %s - run blender/scripts/make_blank_head.py" % BLANK_HEAD_FBX)
+        if not blank(folder, name, BLANK_HEAD_FBX):
+            raise SystemExit("could not build the blank head %s" % head)
+        EAL.save_directory(folder, only_if_is_dirty=False, recursive=True)
 
     # PBZ_KEEP_DEFAULT_OUTFIT=1: the character is bound to another outfit (its carrier is not the shared head
     # part), so the default outfit must stay the game's own. Nothing is blanked, and blanks left in the

@@ -207,8 +207,9 @@ open(RESULT, "w").close()
 # outfit changes. Unset = the previous behaviour for every slot.
 import os as _os
 
+ASSET_ROOT = _os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
 MEL = unreal.MaterialEditingLibrary
-OWN_DIR = "/Game/Korinsna/Own"
+OWN_DIR = ASSET_ROOT + "/Own"
 OWN_SLOTS = sorted({int(v) for v in _os.environ.get("PBZ_OWN_MATERIAL_SLOTS", "").replace(" ", "").split(",") if v}
                    | set(OWN_SPEC))
 missing_base = [slot for slot in OWN_SLOTS if slot not in SLOT_TEXTURE_BASE and slot not in OWN_SPEC]
@@ -382,7 +383,7 @@ log("slot placeholders: %d" % len([m for m in mi_slots if m]))
 # The Korinsna body is a standalone asset with its own skeleton (built by
 # ue/scripts/import_korinsna_sk.py); the hero's own Hun_Body_Simple is replaced by a degenerate
 # mesh instead, so the game keeps animating its original skeleton and we retarget from it.
-MESH = "/Game/Korinsna/SK_Korinsna"
+MESH = ASSET_ROOT + "/SK_Korinsna"
 mesh = EAL.load_asset(MESH)
 if mesh is None:
     raise SystemExit("missing %s - run import_korinsna_sk.py first" % MESH)

@@ -22,10 +22,10 @@ EAL = unreal.EditorAssetLibrary
 ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 RESULT = os.path.join(ROOT, "extract", "ue-retarget-result.txt")
 
-DEST = "/Game/Korinsna"
+DEST = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
 TARGET_SKEL = DEST + "/SK_Korinsna_Skeleton"
 TARGET_MESH = DEST + "/SK_Korinsna"
-SOURCE_MESH = DEST + "/Source/HunSkin"
+SOURCE_MESH = "/Game/Korinsna/Source/HunSkin"
 
 IKR_SOURCE = DEST + "/IKR_Hun"
 IKR_TARGET = DEST + "/IKR_Korinsna"

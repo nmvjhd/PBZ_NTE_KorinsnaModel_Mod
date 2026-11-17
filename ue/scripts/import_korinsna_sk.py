@@ -17,7 +17,7 @@ EAL = unreal.EditorAssetLibrary
 
 ROOT = r"D:\Code\personal\pbz-game-mod\reference\PBZ_NTE_KorinsnaModel_Mod"
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_APose.fbx").replace("\\", "/")
-DEST = "/Game/Korinsna"
+DEST = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
 NAME = "SK_Korinsna"
 RESULT = os.path.join(ROOT, "extract", "ue-skimport-result.txt")
 POSE_OUT = os.path.join(ROOT, "extract", "ue-sk-korinsna-refpose.json")
