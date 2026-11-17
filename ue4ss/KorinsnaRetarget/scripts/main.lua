@@ -1571,73 +1571,6 @@ local function refresh_from_actor(actor)
     if not ok then trace("refresh_from_actor: component walk failed") end
 end
 
--- Creates our own SkeletalMeshComponent instead of re-using the game's part component. The game's
--- component is driven by its own "copy pose" anim graph and has its own animation flags, which
--- silently kept the retarget output from ever being evaluated. A component we create has none of
--- that baggage; the mesh asset and the anim blueprint are already in memory (the game loaded them
--- through the carrier part), so nothing has to be loaded by name.
-local function create_own_body(actor, mesh, class, source)
-    local component_class = nil
-    pcall(function() component_class = StaticFindObject("/Script/Engine.SkeletalMeshComponent") end)
-    if component_class == nil then
-        trace("own body: SkeletalMeshComponent class not found")
-        return nil
-    end
-
-    local component = nil
-    for _, attempt in ipairs({
-        function() return StaticConstructObject(component_class, actor, FName(config.component_name), 0, nil) end,
-        function() return StaticConstructObject(component_class, actor, FName(config.component_name), 0) end,
-        function() return StaticConstructObject(component_class, actor, FName(config.component_name)) end,
-    }) do
-        local ok, created = pcall(attempt)
-        if ok and created ~= nil then
-            component = created
-            break
-        end
-    end
-    if component == nil then
-        trace("own body: StaticConstructObject failed")
-        return nil
-    end
-    trace("own body: object " .. tostring(full_name(component)))
-
-    -- Order matters. Registering before the mesh is assigned leaves the component with no bones at
-    -- all (every bone query answers 0 and it draws black), and the parent has to be in place before
-    -- the anim class: the retarget node looks its source component up once, when the anim instance is
-    -- created, and a missing parent at that moment means it never retargets anything.
-    try("SetSkeletalMeshAsset", function() component:SetSkeletalMeshAsset(mesh) end)
-    trace("own body: mesh=" .. tostring(mesh_name(component)) ..
-        " bones=" .. tostring(bone_count(component)))
-    try("SetCollisionEnabled", function() component:SetCollisionEnabled(0) end)
-    try("SetVisibility", function() component:SetVisibility(true, false) end)
-    try("SetHiddenInGame", function() component:SetHiddenInGame(false, false) end)
-    try("SetGenerateOverlapEvents", function() component:SetGenerateOverlapEvents(false) end)
-    trace("own body: RegisterComponent -> " ..
-        tostring(try("RegisterComponent", function() return component:RegisterComponent() end)) ..
-        " registered=" .. tostring(try("IsRegistered", function() return component:IsRegistered() end)))
-
-    local attached = attach_to(component, source)
-    trace("own body: attached=" .. tostring(attached) ..
-        " at=" .. fmt_vec(component_location(component)))
-
-    -- 0 == EAnimationMode::AnimationBlueprint; without it the anim instance is created but ignored
-    try("SetAnimationMode", function() component:SetAnimationMode(0) end)
-    -- InitAnim() returns early when this is off, and then no instance is ever spawned
-    try("SetEnableAnimation", function() component:SetEnableAnimation(true) end)
-    try("SetDisablePostProcessBlueprint", function() component:SetDisablePostProcessBlueprint(false) end)
-    try("SetAnimInstanceClass", function() component:SetAnimInstanceClass(class) end)
-    trace("own body: animclass now=" .. anim_class_name(component) ..
-        " anim=" .. anim_instance_name(component) ..
-        " post=" .. post_instance_name(component))
-    try("MarkRenderStateDirty", function() component:MarkRenderStateDirty() end)
-    return component
-end
-
--- Disables the engine's animation update-rate optimization. That optimization stops evaluating a
--- mesh which is not being rendered, and this mod hides the hero's body while still retargeting from
--- its pose - so with the optimization on, the pose freezes. APawn/APlayerController::ConsoleCommand
--- is BlueprintCallable, which is why a console command is used instead of a property write.
 local function disable_uro()
     local found = try("FindAllOf PlayerController", function() return FindAllOf("PlayerController") end)
     if type(found) == "table" then
@@ -1687,39 +1620,6 @@ end
 -- Hides every mesh component that belongs to any "Hun" actor: the hero, but also the copies the game
 -- keeps around for sequences and the character UI. Those copies render the same outfit, which is why
 -- hiding only the hero's own component left the robe and the top visible.
-local function hide_all_hun_parts()
-    local objects = try("FindAllOf SkeletalMeshComponent",
-        function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) ~= "table" then return 0 end
-    local hidden = 0
-    for _, obj in pairs(objects) do
-        if usable(obj) and not is_cdo(obj) then
-            local key = full_name(obj)
-            local owner = try("GetOwner", function() return obj:GetOwner() end)
-            local owner_key = owner ~= nil and full_name(owner) or nil
-            local mesh = part_mesh_name(obj)
-            local belongs_to_hun = (owner_key ~= nil and owner_key:find("Hun", 1, true) ~= nil)
-                or (key ~= nil and key:find("Hun", 1, true) ~= nil)
-            local keep = key ~= nil and (key == state.carrier_name or key == state.source_name)
-            local weapon = mesh ~= nil and contains_any(mesh, config.keep_visible)
-            if belongs_to_hun and not keep and not weapon and mesh ~= nil then
-                local already = state.hidden[obj] ~= nil
-                try("SetVisibility", function() obj:SetVisibility(false, false) end)
-                try("SetHiddenInGame", function() obj:SetHiddenInGame(true, false) end)
-                if not already then
-                    state.hidden[obj] = mesh
-                    trace("hide: " .. mesh .. " (" .. tostring(short_name(key)) .. ")")
-                    hidden = hidden + 1
-                end
-            end
-        end
-    end
-    return hidden
-end
-
--- Logs the socket each weapon component hangs from and whether the (possibly blanked) body mesh still
--- provides it. Weapons are attached by socket name, so replacing the body mesh can silently make them
--- disappear - this says exactly which names have to be recreated on the replacement mesh.
 local function report_weapon_sockets()
     local objects = try("FindAllOf SkeletalMeshComponent",
         function() return FindAllOf("SkeletalMeshComponent") end)
@@ -1783,60 +1683,6 @@ end
 --
 -- A per-slot dynamic material instance is the only way to do this from Lua in this build: the mesh
 -- component exposes Scalar/Vector/Color parameter setters but no texture one.
-local function force_opaque(component)
-    if not usable(component) then return false end
-    -- Slot 5's albedo is our own pure white VT map, so the asset is already shipped and loaded. It has
-    -- to be a VT map: the host samplers are virtual textures, and a plain texture there falls back to
-    -- the VT placeholder (the dither pattern this is fixing).
-    local white = find_loaded(
-        "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures/" ..
-        "T_ZeroHun_Cloth_05_BC.T_ZeroHun_Cloth_05_BC")
-    if white == nil then
-        trace("opaque: the white VT texture is not loaded, skipping")
-        return false
-    end
-
-    local count = try("GetNumMaterials", function() return component:GetNumMaterials() end) or 0
-    local done = 0
-    for index = 0, count - 1 do
-        local mid = try("CreateDynamicMaterialInstance",
-            function() return component:CreateDynamicMaterialInstance(index) end)
-        if usable(mid) then
-            -- the cutout parameter is named differently per host material family
-            for _, param in ipairs({ "OpacityMask", "MaskTex", "Opacity" }) do
-                try("SetTextureParameterValue " .. param,
-                    function() mid:SetTextureParameterValue(FName(param), white) end)
-            end
-            done = done + 1
-        end
-    end
-    trace(string.format("opaque: %d of %d material slots patched", done, count))
-    return done > 0
-end
-
--- Weapons are separate ACTORS whose root component the game attaches, once, to one of Hun's hand
--- mount sockets (`WEAPON_R`, `weapon_l`) - and to the `Pt_*_Back_Socket` family when sheathed. That
--- is why a held weapon sits at a constant 9.5-10.4 cm from Hun's hand bone while Korinsna's hand is
--- anywhere from 7 to 52 cm away from it: nothing re-writes the weapon per frame, only the attach
--- decides where it hangs. Redirecting that attach is therefore enough, and it has to be the ACTOR
--- ROOT that is re-parented - re-parenting the mesh child (what this script used to do) leaves the
--- root behind and produces two drivers, which is what made the blades fly around.
---
--- The correction after the re-parent is a single translation. Both hands come out of the retarget
--- with the same world orientation up to one constant per hand (measured over seven samples: left
--- -20.2/97.3/-4.5, right 8.3/-83.0/5.0, stable to 0.1 degrees), so the visually correct placement is
--- "keep the weapon's world rotation, move it by the vector from Hun's hand to ours". After that one
--- shift the weapon's transform relative to our hand bone is constant - exactly like it is relative to
--- Hun's hand bone - so no per-frame correction is needed.
---
--- Hand IK was the other candidate and is not viable: with correct proportions the gap between the two
--- hands grows to 40 cm in some poses, which no unstretched arm can reach.
--- The game names the mesh component of every weapon actor "Weapon Mesh" (`BP_Weapon_*`, and the
--- cutscene weapon actors too - verified in the log for `BP_Weapon_Hun_DoubleBlade_R_C`,
--- `Bp_Seq_HunYuanShi_C`, `BP_Seq_Hun_TangBlade_C`). That is the reliable way to tell a weapon apart
--- from an outfit part, and it is independent of the asset name: `Hun_ChiZheZuiJian` (痴者醉剑) matches
--- none of the keywords below, so a name-only test hid the whole flying sword while its trail effect
--- (a separate Niagara component) kept playing.
 local function is_weapon_component_name(component_name)
     if component_name == nil then return false end
     local lowered = component_name:lower()
@@ -3069,25 +2915,14 @@ local function setup()
                     function() return state.source.VisibilityBasedAnimTickOption end)))
         end
 
-        if config.create_own_component and mesh and class then
-            local own = create_own_body(state.actor, mesh, class, state.source)
-            if own then
-                state.body = own
-                keep_ticking(own, "own body")
-                show_part(own)
-                dump_all()
-            end
-        end
-
-        if not state.body then
-            -- The game's own part component is registered, placed and - through the mesh's
-            -- post-process blueprint - already running the retarget graph. All that is needed is to
-            -- make it stop following CharacterMesh0's pose, because a follower component never
-            -- evaluates its own animation.
-            state.body = state.carrier
-            state.carrier_name = full_name(state.carrier)
-            state.source_name = full_name(state.source)
-            trace("hide: carrier=" .. tostring(state.carrier_name) ..
+        -- The game's own part component is registered, placed and - through the mesh's
+        -- post-process blueprint - already running the retarget graph. All that is needed is to
+        -- make it stop following CharacterMesh0's pose, because a follower component never
+        -- evaluates its own animation.
+        state.body = state.carrier
+        state.carrier_name = full_name(state.carrier)
+        state.source_name = full_name(state.source)
+        trace("hide: carrier=" .. tostring(state.carrier_name) ..
                 " source=" .. tostring(state.source_name))
             try("SetLeaderPoseComponent", function() state.carrier:SetLeaderPoseComponent(nil, true, true) end)
             keep_ticking(state.carrier, "carrier")
@@ -3143,10 +2978,6 @@ local function setup()
     if valid(target) then
         materials.apply_own(target)
         materials.guard(target)
-    end
-
-    if config.force_opaque and not state.opaque_done and valid(target) then
-        state.opaque_done = force_opaque(target)
     end
 
     -- Re-applied every scan: the mask/visibility flags are also touched by the game's own wardrobe
@@ -3215,13 +3046,9 @@ local function setup()
         local mark = marks[state.geo_checks + 1]
         if mark ~= nil and state.tick >= state.carrier_ready_tick + mark then
             state.geo_checks = state.geo_checks + 1
-            local ok, err = pcall(report_weapon_geometry, "t+" .. mark, state.geo_checks == 1)
+            local ok, err = pcall(diagnostics.report_weapon_geometry, "t+" .. mark, state.geo_checks == 1)
             if not ok then trace("geo error: " .. tostring(err)) end
         end
-    end
-
-    if config.hide_all_hun_parts and state.aligned then
-        hide_all_hun_parts()
     end
 
     if state.aligned and not state.reported_sockets then
