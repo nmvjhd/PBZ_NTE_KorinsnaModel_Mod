@@ -377,6 +377,175 @@ local function trace2(msg)
     write_line(2, msg)
 end
 
+local function now_ms()
+    if type(os.mtime) == "function" then return os.mtime() end
+    return os.clock() * 1000
+end
+
+-- Structured single-line JSON logger for F12 diagnostics (zero external dependencies, cycle-safe,
+-- userdata-safe, sensitive-key redacting). Packed in one table to stay well under Lua's 200-local limit.
+local diag_log = (function()
+    local M = {}
+    local seq = 0
+    local SENSITIVE_KEYS = {
+        password = true, secret = true, token = true, api_key = true,
+        authorization = true, cookie = true, ssn = true, credit_card = true,
+    }
+    local JSON_ESCAPES = {
+        ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b',
+        ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t',
+    }
+
+    function M.round_ms(ms)
+        return math.floor((tonumber(ms) or 0) * 100 + 0.5) / 100
+    end
+
+    local function sanitize(val, seen, depth)
+        local t = type(val)
+        if t == "nil" or t == "boolean" or t == "string" then return val end
+        if t == "number" then
+            if val ~= val or val == math.huge or val == -math.huge then return tostring(val) end
+            return val
+        end
+        if t ~= "table" then return "<" .. t .. ">" end
+        depth = depth or 0
+        if depth >= 8 then return "<max_depth>" end
+        seen = seen or {}
+        if seen[val] then return "<circular>" end
+        seen[val] = true
+        local count, max_idx, is_array = 0, 0, true
+        for k in pairs(val) do
+            count = count + 1
+            if type(k) ~= "number" or k < 1 or math.floor(k) ~= k then
+                is_array = false
+            elseif k > max_idx then
+                max_idx = k
+            end
+        end
+        local out = {}
+        if is_array and count > 0 and max_idx == count then
+            for i = 1, count do out[i] = sanitize(val[i], seen, depth + 1) end
+        else
+            for k, v in pairs(val) do
+                local ks = tostring(k)
+                if SENSITIVE_KEYS[ks:lower()] then
+                    out[ks] = "[REDACTED]"
+                else
+                    out[ks] = sanitize(v, seen, depth + 1)
+                end
+            end
+        end
+        seen[val] = nil
+        return out
+    end
+
+    local function encode_str(s)
+        return '"' .. s:gsub('[%z\1-\31\\"]', function(c)
+            return JSON_ESCAPES[c] or string.format("\\u%04x", string.byte(c))
+        end) .. '"'
+    end
+
+    local function encode_val(val)
+        local t = type(val)
+        if val == nil then return "null" end
+        if t == "boolean" then return val and "true" or "false" end
+        if t == "number" then return tostring(val) end
+        if t == "string" then return encode_str(val) end
+        if t ~= "table" then return encode_str("<" .. t .. ">") end
+        local count, max_idx, is_array = 0, 0, true
+        for k in pairs(val) do
+            count = count + 1
+            if type(k) ~= "number" or k < 1 or math.floor(k) ~= k then
+                is_array = false
+            elseif k > max_idx then
+                max_idx = k
+            end
+        end
+        if is_array and count > 0 and max_idx == count then
+            local items = {}
+            for i = 1, count do items[i] = encode_val(val[i]) end
+            return "[" .. table.concat(items, ",") .. "]"
+        end
+        local keys = {}
+        for k in pairs(val) do keys[#keys + 1] = tostring(k) end
+        table.sort(keys)
+        local parts = {}
+        for _, k in ipairs(keys) do
+            parts[#parts + 1] = encode_str(k) .. ":" .. encode_val(val[k])
+        end
+        return "{" .. table.concat(parts, ",") .. "}"
+    end
+
+    local function encode_json(record)
+        local ok, encoded = pcall(function() return encode_val(sanitize(record)) end)
+        if ok and type(encoded) == "string" then return encoded end
+        return '{"event":"log.encode.failed","level":"ERROR"}'
+    end
+
+    function M.new_ctx(prefix, force, open_file)
+        seq = seq + 1
+        local ctx = {
+            correlation_id = string.format("%s-%s-%03d", prefix or "f12",
+                tostring(os.date("%Y%m%dT%H%M%S")), seq),
+            force = force == true,
+            file = nil,
+        }
+        if open_file and (config.log_level or 1) > 0 then
+            local ok, f = pcall(io.open, LOG_PATH, "a")
+            if ok and f then ctx.file = f end
+        end
+        return ctx
+    end
+
+    function M.close_ctx(ctx)
+        if ctx and ctx.file then
+            pcall(function() ctx.file:close() end)
+            ctx.file = nil
+        end
+    end
+
+    function M.emit(level, event, fields, ctx)
+        local cfg_level = config.log_level or 1
+        if cfg_level <= 0 then return end
+        local forced = ctx and ctx.force == true
+        if not forced and cfg_level < 2 and level ~= "ERROR" and level ~= "WARN" then
+            return
+        end
+        local record = {
+            ts = tostring(os.date("%Y-%m-%dT%H:%M:%S")),
+            mono_ms = math.floor(now_ms()),
+            level = level,
+            event = event,
+            mod = MOD,
+            correlation_id = (ctx and ctx.correlation_id) or "-",
+        }
+        if type(fields) == "table" then
+            for k, v in pairs(fields) do
+                if record[k] == nil then record[k] = v end
+            end
+        end
+        local line = encode_json(record)
+        table.insert(log_lines, line)
+        if #log_lines > 300 then table.remove(log_lines, 1) end
+        if cfg_level >= 2 then print("[" .. MOD .. "] " .. line) end
+        if ctx and ctx.file then
+            pcall(function()
+                ctx.file:write(line .. "\n")
+                ctx.file:flush()
+            end)
+        else
+            pcall(function()
+                local f = io.open(LOG_PATH, "a")
+                if not f then return end
+                f:write(line .. "\n")
+                f:close()
+            end)
+        end
+    end
+
+    return M
+end)()
+
 -- Strict on purpose: an object whose validity cannot be read is treated as gone. The old fallback
 -- ("unknown means valid") made the script dereference the hero's destroyed components after the game
 -- re-created him on a map change, which crashed the game (see docs/TECHNICAL-GUIDE.md 6.12).
@@ -1506,43 +1675,60 @@ local function watch_pose(target)
         watch_pose_bones(target)
     end
 end
--- Diagnostics only: every line is a file write, and this runs on every hero (re)build, so it is
--- logged at the verbose level. The same dump is behind the diagnostics key (config.diagnostics_key).
-local function dump_component(component, tag)
+-- Diagnostics only: runs on hero (re)build at dev log level, and always on explicit F12 press.
+local function dump_component(component, tag, ctx)
     if not valid(component) then
-        trace2(string.format("%s: <stale>", tag))
-        return
+        diag_log.emit("WARN", "diag.dump.component", {
+            stage = "dump",
+            role = tag,
+            stale = true,
+        }, ctx)
+        return false
     end
     local parent = soft(function() return component:GetAttachParent() end)
-    trace2(string.format("%s %-14s mesh=%-14s bones=%-4s registered=%s",
-        tag, object_name(component), tostring(mesh_name(component)), tostring(bone_count(component)),
-        tostring(soft(function() return component:IsRegistered() end))))
-    trace2(string.format("%s   anim=%-26s animclass=%-26s post=%-26s",
-        tag, anim_instance_name(component), anim_class_name(component), post_instance_name(component)))
-    trace2(string.format("%s   parent=%-16s at=(%s) rel=(%s) parent_at=(%s) leader=%s",
-        tag, object_name(parent), fmt_vec(component_location(component)),
-        fmt_vec(soft(function() return relative_location(component) end)),
-        fmt_vec(parent and component_location(parent) or nil),
-        object_name(soft(function() return component:GetMasterPoseComponent() end))))
+    diag_log.emit("INFO", "diag.dump.component", {
+        stage = "dump",
+        role = tag,
+        component = object_name(component),
+        mesh = mesh_name(component),
+        bones = bone_count(component),
+        registered = soft(function() return component:IsRegistered() end),
+        anim = anim_instance_name(component),
+        anim_class = anim_class_name(component),
+        post = post_instance_name(component),
+        parent = object_name(parent),
+        world_at = fmt_vec(component_location(component)),
+        rel_at = fmt_vec(soft(function() return relative_location(component) end)),
+        parent_at = fmt_vec(parent and component_location(parent) or nil),
+        leader = object_name(soft(function() return component:GetMasterPoseComponent() end)),
+    }, ctx)
+    return true
 end
 
-local function dump_all()
-    trace2("dump: source")
-    dump_component(state.source, "  src")
-    trace2("dump: carrier (game part)")
-    dump_component(state.carrier, "  carrier")
-    trace2("dump: our body")
-    dump_component(state.body, "  body")
-    trace2("dump: anim class " .. tostring(anim_class() and "found" or "MISSING"))
+local function dump_all(ctx)
+    local started = now_ms()
+    local dump_ctx = ctx or diag_log.new_ctx("dump", false, false)
+    local valid_count = 0
+    if dump_component(state.source, "source", dump_ctx) then valid_count = valid_count + 1 end
+    if dump_component(state.carrier, "carrier", dump_ctx) then valid_count = valid_count + 1 end
+    if dump_component(state.body, "body", dump_ctx) then valid_count = valid_count + 1 end
+    local body = state.body or state.carrier
+    local fields = {
+        stage = "dump",
+        valid_components = valid_count,
+        anim_class_found = anim_class() ~= nil,
+        duration_ms = diag_log.round_ms(now_ms() - started),
+    }
     if valid(state.source) then
-        trace2("dump: source world head " .. fmt_vec(bone_world(state.source, "Head")) ..
-            " hand_l " .. fmt_vec(bone_world(state.source, "hand_l")))
+        fields.source_world_head = fmt_vec(bone_world(state.source, "Head"))
+        fields.source_world_hand_l = fmt_vec(bone_world(state.source, "hand_l"))
     end
-    if valid(state.body or state.carrier) then
-        local body = state.body or state.carrier
-        trace2("dump: ours world head " .. fmt_vec(bone_world(body, "head_Bone001")) ..
-            " hand_l " .. fmt_vec(bone_world(body, "Bip001-L-Hand")))
+    if valid(body) then
+        fields.ours_world_head = fmt_vec(bone_world(body, "head_Bone001"))
+        fields.ours_world_hand_l = fmt_vec(bone_world(body, "Bip001-L-Hand"))
     end
+    diag_log.emit("INFO", "diag.dump.summary", fields, dump_ctx)
+    return { valid_components = valid_count, duration_ms = fields.duration_ms }
 end
 
 -- Enumerate the actor's own components. FindAllOf("/Script/Engine.SkeletalMeshComponent") returns
@@ -2923,22 +3109,21 @@ local function setup()
         state.carrier_name = full_name(state.carrier)
         state.source_name = full_name(state.source)
         trace("hide: carrier=" .. tostring(state.carrier_name) ..
-                " source=" .. tostring(state.source_name))
-            try("SetLeaderPoseComponent", function() state.carrier:SetLeaderPoseComponent(nil, true, true) end)
-            keep_ticking(state.carrier, "carrier")
-            show_part(state.carrier)
-            -- the source body appeared before the actor was known, so it never went through the
-            -- spawn queue; queue it by hand
-            if config.hide_parts and valid(state.source) then
-                state.spawned_parts = state.spawned_parts or {}
-                local key = full_name(state.source)
-                if key and not state.spawned_parts[key] then
-                    state.spawned_parts[key] = state.source
-                    trace("hide: queued the source body")
-                end
+            " source=" .. tostring(state.source_name))
+        try("SetLeaderPoseComponent", function() state.carrier:SetLeaderPoseComponent(nil, true, true) end)
+        keep_ticking(state.carrier, "carrier")
+        show_part(state.carrier)
+        -- the source body appeared before the actor was known, so it never went through the
+        -- spawn queue; queue it by hand
+        if config.hide_parts and valid(state.source) then
+            state.spawned_parts = state.spawned_parts or {}
+            local key = full_name(state.source)
+            if key and not state.spawned_parts[key] then
+                state.spawned_parts[key] = state.source
+                trace("hide: queued the source body")
             end
-            dump_all()
         end
+        dump_all()
 
         -- A freshly adopted hero is the second (and last) moment that gets a level-wide rebuild of the
         -- copy/garment caches, the first being a map change. Between those two events the spawn
@@ -3278,46 +3463,96 @@ end
 -- logs every part; `problems_only` logs just such parts. Problem lines, so they show at every log level.
 local render_check_tick = nil
 
-local function report_hero_render(tag, problems_only)
+local function report_hero_render(tag, problems_only, ctx)
+    local started = now_ms()
+    local own_ctx = ctx == nil
+    local render_ctx = ctx or diag_log.new_ctx("render", not problems_only, false)
     local pawn = resolve_player_pawn()
     local pawn_name = pawn ~= nil and full_name(pawn) or nil
     if not problems_only then
-        trace_problem(string.format("render[%s]: pawn=%s mod_actor=%s carrier=%s", tostring(tag),
-            tostring(short_name(pawn_name)), tostring(short_name(state.actor_name)),
-            tostring(short_name(state.carrier_name))))
+        diag_log.emit("INFO", "diag.render.start", {
+            stage = "render",
+            tag = tostring(tag),
+            pawn = short_name(pawn_name),
+            mod_actor = short_name(state.actor_name),
+            carrier = short_name(state.carrier_name),
+        }, render_ctx)
     end
-    if pawn_name == nil then return end
+    if pawn_name == nil then
+        if not problems_only then
+            diag_log.emit("WARN", "diag.render.skipped", {
+                stage = "render",
+                tag = tostring(tag),
+                reason = "pawn_not_found",
+                duration_ms = diag_log.round_ms(now_ms() - started),
+            }, render_ctx)
+        end
+        return { parts = 0, anomalies = 0, skipped = true, reason = "pawn_not_found" }
+    end
     local objects = soft(function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) ~= "table" then return end
+    if type(objects) ~= "table" then
+        diag_log.emit("WARN", "diag.render.skipped", {
+            stage = "render",
+            tag = tostring(tag),
+            reason = "find_all_failed",
+            duration_ms = diag_log.round_ms(now_ms() - started),
+        }, render_ctx)
+        return { parts = 0, anomalies = 0, skipped = true, reason = "find_all_failed" }
+    end
+    local parts_count, anomalies_count = 0, 0
     for _, obj in pairs(objects) do
         if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, pawn_name) then
-            local function flag(read)
-                local value = soft(read)
-                if value == nil then return "?" end
-                return tostring(value)
-            end
-            local black = soft(function() return obj:IsVisible() end) == true
-                and soft(function() return obj.bRenderInMainPass end) == false
-            if problems_only and not black then goto continue end
-            local leader = soft(function() return obj.LeaderPoseComponent end)
-            local leader_name = (leader ~= nil and valid(leader)) and short_name(full_name(leader)) or "none"
-            trace_problem(string.format(
-                "render[%s]: %s mesh=%s visible=%s hiddenInGame=%s mainPass=%s depthPass=%s shadow=%s leader=%s",
-                tostring(tag), tostring(short_name(full_name(obj))), tostring(part_mesh_name(obj)),
-                flag(function() return obj:IsVisible() end), flag(function() return obj.bHiddenInGame end),
-                flag(function() return obj.bRenderInMainPass end), flag(function() return obj.bRenderInDepthPass end),
-                flag(function() return obj.CastShadow end), tostring(leader_name)))
-            for index = 0, 7 do
-                local material = soft(function() return obj:GetMaterial(index) end)
-                if material == nil or not valid(material) then break end
-                local parent = soft(function() return material.Parent end)
-                trace_problem(string.format("render[%s]:     mat[%d] %s parent=%s", tostring(tag), index,
-                    tostring(short_name(full_name(material))),
-                    tostring((parent ~= nil and valid(parent)) and short_name(full_name(parent)) or "-")))
+            local visible = soft(function() return obj:IsVisible() end)
+            local main_pass = soft(function() return obj.bRenderInMainPass end)
+            local black = visible == true and main_pass == false
+            if black then anomalies_count = anomalies_count + 1 end
+            if not problems_only or black then
+                parts_count = parts_count + 1
+                local leader = soft(function() return obj.LeaderPoseComponent end)
+                local leader_name = (leader ~= nil and valid(leader)) and short_name(full_name(leader)) or "none"
+                local mats = {}
+                for index = 0, 7 do
+                    local material = soft(function() return obj:GetMaterial(index) end)
+                    if material == nil or not valid(material) then break end
+                    local parent = soft(function() return material.Parent end)
+                    mats[#mats + 1] = {
+                        slot = index,
+                        name = short_name(full_name(material)),
+                        parent = (parent ~= nil and valid(parent)) and short_name(full_name(parent)) or "-",
+                    }
+                end
+                local fields = {
+                    stage = "render",
+                    tag = tostring(tag),
+                    component = short_name(full_name(obj)),
+                    mesh = part_mesh_name(obj),
+                    visible = visible,
+                    hidden_in_game = soft(function() return obj.bHiddenInGame end),
+                    main_pass = main_pass,
+                    depth_pass = soft(function() return obj.bRenderInDepthPass end),
+                    cast_shadow = soft(function() return obj.CastShadow end),
+                    leader = leader_name,
+                    materials = mats,
+                }
+                if black then fields.anomaly = "visible_without_main_pass" end
+                diag_log.emit(black and "WARN" or "INFO", "diag.render.part", fields, render_ctx)
             end
         end
-        ::continue::
     end
+    local duration_ms = diag_log.round_ms(now_ms() - started)
+    if not problems_only or anomalies_count > 0 then
+        local done_fields = {
+            stage = "render",
+            tag = tostring(tag),
+            parts_count = parts_count,
+            anomalies_count = anomalies_count,
+            duration_ms = duration_ms,
+        }
+        if parts_count == 0 then done_fields.reason = "no_matching_components" end
+        diag_log.emit(anomalies_count > 0 and "WARN" or "INFO", "diag.render.done", done_fields, render_ctx)
+    end
+    if own_ctx then diag_log.close_ctx(render_ctx) end
+    return { parts = parts_count, anomalies = anomalies_count, duration_ms = duration_ms }
 end
 
 -- The mod is bound to ONE outfit: its mesh ships as a part only that outfit uses (config.carrier_mesh_name),
@@ -3365,8 +3600,17 @@ local function release_outfit(reason)
                     pcall(function() obj:SetRenderInMainPass(true) end)
                     pcall(function() obj:SetCastShadow(true) end)
                     if was ~= nil then
-                        pcall(function() obj:SetHiddenInGame(was.hidden_in_game == true, false) end)
-                        pcall(function() obj:SetVisibility(was.visible ~= false, false) end)
+                        -- Never write hidden_in_game=true or visible=false onto the newly equipped outfit:
+                        -- `was` may have been captured while another mod outfit (e.g. PBZNativeWardrobe) or
+                        -- a blank carrier part had the component hidden, and the game has already configured
+                        -- the new outfit's visibility.
+                        if was.hidden_in_game ~= true then
+                            pcall(function() obj:SetHiddenInGame(false, false) end)
+                        end
+                        local hidden_now = soft(function() return obj.bHiddenInGame end) == true
+                        if was.visible ~= false or (mesh ~= nil and not hidden_now) then
+                            pcall(function() obj:SetVisibility(true, false) end)
+                        end
                     end
                 end
             end
@@ -3496,11 +3740,6 @@ local scan_last_end = nil
 local scan_last_cost = 0
 local phase_setup = 0
 local phase_sweep = 0
-
-local function now_ms()
-    if type(os.mtime) == "function" then return os.mtime() end
-    return os.clock() * 1000
-end
 
 -- Garment notifications, drained by `scan()`.
 --
@@ -3708,31 +3947,197 @@ end
 -- risk, the scan does not know about it.
 local EXTRA_DIAGNOSTICS = mod_dir .. "/diagnostics.lua"
 
-local function run_extra_diagnostics()
+local function run_extra_diagnostics(ctx)
+    local started = now_ms()
+    local file_name = "diagnostics.lua"
+    local diag_ctx = ctx or diag_log.new_ctx("extra", true, false)
     local probe = io.open(EXTRA_DIAGNOSTICS, "r")
-    if probe == nil then return end
+    if probe == nil then
+        diag_log.emit("INFO", "diag.extra.skipped", {
+            stage = "extra",
+            file = file_name,
+            reason = "file_not_found",
+            duration_ms = diag_log.round_ms(now_ms() - started),
+        }, diag_ctx)
+        return { status = "skipped", reason = "file_not_found" }
+    end
     probe:close()
+
     local chunk, load_error = loadfile(EXTRA_DIAGNOSTICS)
     if chunk == nil then
-        trace_problem("diagnostics.lua: " .. tostring(load_error))
-        return
+        diag_log.emit("ERROR", "diag.extra.failed", {
+            stage = "extra",
+            file = file_name,
+            error_code = "DIAG_EXTRA_SYNTAX_ERROR",
+            error = tostring(load_error),
+            duration_ms = diag_log.round_ms(now_ms() - started),
+        }, diag_ctx)
+        return { status = "failed", error_code = "DIAG_EXTRA_SYNTAX_ERROR" }
     end
-    local ok, entry = pcall(chunk)
+
+    local ok, entry = xpcall(chunk, debug.traceback)
     if not ok or type(entry) ~= "function" then
-        trace_problem("diagnostics.lua: " .. (ok and "must return a function" or tostring(entry)))
-        return
+        local code = ok and "DIAG_EXTRA_INVALID_RETURN" or "DIAG_EXTRA_LOAD_FAILED"
+        diag_log.emit("ERROR", "diag.extra.failed", {
+            stage = "extra",
+            file = file_name,
+            error_code = code,
+            error = ok and "must return a function" or nil,
+            traceback = not ok and tostring(entry) or nil,
+            duration_ms = diag_log.round_ms(now_ms() - started),
+        }, diag_ctx)
+        return { status = "failed", error_code = code }
     end
+
     local api = {
-        log = function(text) trace_problem("diag: " .. tostring(text)) end,
+        correlation_id = diag_ctx.correlation_id,
+        log = function(text, fields, level)
+            local payload = { stage = "extra", message = tostring(text) }
+            if type(fields) == "table" then
+                for k, v in pairs(fields) do
+                    if payload[k] == nil then payload[k] = v end
+                end
+            end
+            diag_log.emit(level or "INFO", "diag.extra.entry", payload, diag_ctx)
+        end,
+        log_event = function(level, event, fields)
+            local payload = { stage = "extra" }
+            if type(fields) == "table" then
+                for k, v in pairs(fields) do
+                    if payload[k] == nil then payload[k] = v end
+                end
+            end
+            diag_log.emit(level or "INFO", tostring(event or "diag.extra.entry"), payload, diag_ctx)
+        end,
         pawn = resolve_player_pawn,
         state = state, config = config,
         valid = valid, soft = soft, full_name = full_name, short_name = short_name,
         mesh_name = mesh_name, part_mesh_name = part_mesh_name,
         belongs_to_actor = belongs_to_actor, is_hero_copy = is_hero_copy,
-        report_hero_render = report_hero_render,
+        report_hero_render = function(tag, problems_only)
+            return report_hero_render(tag, problems_only, diag_ctx)
+        end,
     }
-    local ran, run_error = pcall(entry, api)
-    if not ran then trace_problem("diagnostics.lua failed: " .. tostring(run_error)) end
+
+    local ran, run_error = xpcall(function() entry(api) end, debug.traceback)
+    local duration_ms = diag_log.round_ms(now_ms() - started)
+    if not ran then
+        diag_log.emit("ERROR", "diag.extra.failed", {
+            stage = "extra",
+            file = file_name,
+            error_code = "DIAG_EXTRA_RUN_FAILED",
+            traceback = tostring(run_error),
+            duration_ms = duration_ms,
+        }, diag_ctx)
+        return { status = "failed", error_code = "DIAG_EXTRA_RUN_FAILED", duration_ms = duration_ms }
+    end
+
+    diag_log.emit("INFO", "diag.extra.done", {
+        stage = "extra",
+        file = file_name,
+        duration_ms = duration_ms,
+    }, diag_ctx)
+    return { status = "ok", duration_ms = duration_ms }
+end
+
+function diag_log.run_f12()
+    local started = now_ms()
+    local ctx = diag_log.new_ctx("f12", true, true)
+    local errors_count = 0
+    local render_parts, render_anomalies = 0, 0
+    local extra_status = "unknown"
+    local dump_valid = 0
+
+    local ok_all, fatal_err = xpcall(function()
+        diag_log.emit("INFO", "diag.f12.start", {
+            stage = "init",
+            key = tostring(config.diagnostics_key),
+            log_level = config.log_level or 1,
+            tick = state.tick,
+        }, ctx)
+
+        local stage_start = now_ms()
+        local ok_render, render_res = xpcall(function()
+            return report_hero_render("key", false, ctx)
+        end, debug.traceback)
+        if not ok_render then
+            errors_count = errors_count + 1
+            diag_log.emit("ERROR", "diag.stage.failed", {
+                stage = "render",
+                error_code = "DIAG_RENDER_FAILED",
+                traceback = tostring(render_res),
+                duration_ms = diag_log.round_ms(now_ms() - stage_start),
+            }, ctx)
+        elseif type(render_res) == "table" then
+            render_parts = render_res.parts or 0
+            render_anomalies = render_res.anomalies or 0
+        end
+
+        stage_start = now_ms()
+        local ok_extra, extra_res = xpcall(function()
+            return run_extra_diagnostics(ctx)
+        end, debug.traceback)
+        if not ok_extra then
+            errors_count = errors_count + 1
+            extra_status = "failed"
+            diag_log.emit("ERROR", "diag.stage.failed", {
+                stage = "extra",
+                error_code = "DIAG_EXTRA_UNEXPECTED_ERROR",
+                traceback = tostring(extra_res),
+                duration_ms = diag_log.round_ms(now_ms() - stage_start),
+            }, ctx)
+        elseif type(extra_res) == "table" then
+            extra_status = extra_res.status or "ok"
+            if extra_status == "failed" then errors_count = errors_count + 1 end
+        end
+
+        stage_start = now_ms()
+        local ok_dump, dump_res = xpcall(function()
+            return dump_all(ctx)
+        end, debug.traceback)
+        if not ok_dump then
+            errors_count = errors_count + 1
+            diag_log.emit("ERROR", "diag.stage.failed", {
+                stage = "dump",
+                error_code = "DIAG_DUMP_FAILED",
+                traceback = tostring(dump_res),
+                duration_ms = diag_log.round_ms(now_ms() - stage_start),
+            }, ctx)
+        elseif type(dump_res) == "table" then
+            dump_valid = dump_res.valid_components or 0
+        end
+    end, debug.traceback)
+
+    if not ok_all then
+        errors_count = errors_count + 1
+        diag_log.emit("ERROR", "diag.f12.failed", {
+            stage = "done",
+            error_code = "DIAG_F12_FATAL",
+            traceback = tostring(fatal_err),
+            duration_ms = diag_log.round_ms(now_ms() - started),
+        }, ctx)
+    end
+
+    local total_ms = diag_log.round_ms(now_ms() - started)
+    local slow_threshold_ms = config.diag_slow_ms or 50
+    local is_slow = total_ms >= slow_threshold_ms
+    local done_level = errors_count > 0 and "ERROR" or ((is_slow or render_anomalies > 0) and "WARN" or "INFO")
+    local done_fields = {
+        stage = "done",
+        duration_ms = total_ms,
+        render_parts = render_parts,
+        render_anomalies = render_anomalies,
+        extra_status = extra_status,
+        dump_valid_components = dump_valid,
+        errors_count = errors_count,
+        tick = state.tick,
+    }
+    if is_slow then
+        done_fields.slow = true
+        done_fields.slow_threshold_ms = slow_threshold_ms
+    end
+    diag_log.emit(done_level, "diag.f12.done", done_fields, ctx)
+    diag_log.close_ctx(ctx)
 end
 
 local function toggle_ours()
@@ -3794,15 +4199,10 @@ local function boot()
         end
         if Key[config.diagnostics_key] then
             pcall(RegisterKeyBind, Key[config.diagnostics_key], function()
-                local run = function()
-                    report_hero_render("key")
-                    run_extra_diagnostics()
-                    dump_all()
-                end
                 if type(ExecuteInGameThread) == "function" then
-                    ExecuteInGameThread(run)
+                    ExecuteInGameThread(diag_log.run_f12)
                 else
-                    run()
+                    diag_log.run_f12()
                 end
             end)
         end
