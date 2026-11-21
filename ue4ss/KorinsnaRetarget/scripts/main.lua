@@ -596,7 +596,7 @@ local function resolve_component(key)
     return found
 end
 
--- Forward declarations: the helpers below are defined before these, but they call them.local vec_of
+-- Forward declarations: the helpers below are defined before these, but they call them.
 local try
 local fmt_vec
 
@@ -788,7 +788,7 @@ local RESET_KEYS = {
     "pose_prev", "pose_stuck", "pose_heals", "pose_samples", "pose_heal_tick",
     "pose_window", "pose_fail_streak", "pose_last_ours", "pose_identical",
     "attach_checks", "geo_checks", "census_steps", "dumped_everything",
-    "reported_sockets", "weapon_attached", "weapon_prev", "mids", "hidden_shadow_cleared",
+    "reported_sockets", "weapon_attached", "weapon_prev", "mids",
     "weapon_sockets", "weapon_reanchor", "weapon_reanchor_ready",
     "copy_hidden", "copy_leader", "copy_reported", "cloth_seen", "cloth_reported",
     "copy_seen", "copy_outfit_reported", "copy_list", "copy_carriers", "cloth_list",
@@ -2952,35 +2952,27 @@ local function hero_part_components()
     end
     -- Fast O(1) path: look up the hero's known part components directly by path instead of walking
     -- all SkeletalMeshComponents in the world.
+    local function collect(obj)
+        if not usable(obj) or is_cdo(obj) or not belongs_to_actor(obj, state.actor_name) then return end
+        local key = full_name(obj)
+        local mesh = part_mesh_name(obj)
+        if mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
+            and key ~= state.source_name and not is_weapon_component(obj, mesh) then
+            -- names, not objects: the wardrobe can destroy a part while the map keeps running
+            list[#list + 1] = key
+        end
+    end
     local actor_path = state.actor_name and state.actor_name:gsub("^%S+%s+", "") or nil
     if actor_path ~= nil then
         for _, part_name in ipairs({ "meshhead", "Hun_Hat", "Hun_Hat01", "meshBrowLashCard", "meshScarf", "meshBand" }) do
-            local obj = usable(StaticFindObject(actor_path .. "." .. part_name))
-            if obj ~= nil and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
-                local key = full_name(obj)
-                local mesh = part_mesh_name(obj)
-                if mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
-                    and key ~= state.source_name and not is_weapon_component(obj, mesh) then
-                    list[#list + 1] = key
-                end
-            end
+            collect(StaticFindObject(actor_path .. "." .. part_name))
         end
     end
     if #list == 0 then
         local objects = try("FindAllOf SkeletalMeshComponent",
             function() return FindAllOf("SkeletalMeshComponent") end)
         if type(objects) == "table" then
-            for _, obj in pairs(objects) do
-                if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
-                    local key = full_name(obj)
-                    local mesh = part_mesh_name(obj)
-                    if mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
-                        and key ~= state.source_name and not is_weapon_component(obj, mesh) then
-                        -- names, not objects: the wardrobe can destroy a part while the map keeps running
-                        list[#list + 1] = key
-                    end
-                end
-            end
+            for _, obj in pairs(objects) do collect(obj) end
         end
     end
     state.quiet_parts = list

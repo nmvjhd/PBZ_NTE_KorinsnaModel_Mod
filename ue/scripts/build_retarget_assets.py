@@ -337,11 +337,17 @@ def main():
         log("aligned %d chain(s), retarget pose saved" % aligned)
         EAL.save_loaded_asset(rig_target, False)
 
-    if config.get("game_reference_capture"):
+    capture_path = os.environ.get("PBZ_GAME_REFERENCE_CAPTURE") or config.get("game_reference_capture")
+    if capture_path:
         import sys
-        sys.path.insert(0, os.path.join(ROOT, "..", "..", "characters", "yae", "scripts"))
+        workspace_root = os.path.abspath(os.path.join(ROOT, "..", ".."))
+        if not os.path.isabs(capture_path):
+            capture_path = os.path.join(workspace_root, capture_path)
+        shared_scripts = os.path.join(workspace_root, ".agents", "skills", "pbz-character-mod", "scripts")
+        if shared_scripts not in sys.path:
+            sys.path.insert(0, shared_scripts)
         from author_arm_pose import apply
-        apply(rtg, target_mesh, participating, config["game_reference_capture"], log)
+        apply(rtg, target_mesh, participating, capture_path, log)
 
     # Op enable flags come from the config too. The IK half of the default stack must stay off: it
     # retargets IK goals, and the target IK Rig has no goals or solvers, so enabling it crashes the

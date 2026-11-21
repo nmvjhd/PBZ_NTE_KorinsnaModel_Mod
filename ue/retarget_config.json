@@ -800,5 +800,5 @@
       ]
     }
   ],
-  "game_reference_capture": "D:\\Code\\personal\\pbz-game-mod\\characters\\yae\\extract\\arm-pose.jsonl"
+  "game_reference_capture": "tools/arm-pose/arm-pose.jsonl"
 }
