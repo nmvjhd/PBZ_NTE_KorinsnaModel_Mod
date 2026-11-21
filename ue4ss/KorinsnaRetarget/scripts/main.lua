@@ -2950,17 +2950,35 @@ local function hero_part_components()
     if refresh then
         return state.quiet_parts
     end
-    local objects = try("FindAllOf SkeletalMeshComponent",
-        function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) == "table" then
-        for _, obj in pairs(objects) do
-            if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
+    -- Fast O(1) path: look up the hero's known part components directly by path instead of walking
+    -- all SkeletalMeshComponents in the world.
+    local actor_path = state.actor_name and state.actor_name:gsub("^%S+%s+", "") or nil
+    if actor_path ~= nil then
+        for _, part_name in ipairs({ "meshhead", "Hun_Hat", "Hun_Hat01", "meshBrowLashCard", "meshScarf", "meshBand" }) do
+            local obj = usable(StaticFindObject(actor_path .. "." .. part_name))
+            if obj ~= nil and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
                 local key = full_name(obj)
                 local mesh = part_mesh_name(obj)
                 if mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
                     and key ~= state.source_name and not is_weapon_component(obj, mesh) then
-                    -- names, not objects: the wardrobe can destroy a part while the map keeps running
                     list[#list + 1] = key
+                end
+            end
+        end
+    end
+    if #list == 0 then
+        local objects = try("FindAllOf SkeletalMeshComponent",
+            function() return FindAllOf("SkeletalMeshComponent") end)
+        if type(objects) == "table" then
+            for _, obj in pairs(objects) do
+                if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
+                    local key = full_name(obj)
+                    local mesh = part_mesh_name(obj)
+                    if mesh ~= nil and key ~= state.carrier_name and not is_carrier_mesh(mesh)
+                        and key ~= state.source_name and not is_weapon_component(obj, mesh) then
+                        -- names, not objects: the wardrobe can destroy a part while the map keeps running
+                        list[#list + 1] = key
+                    end
                 end
             end
         end
@@ -3680,12 +3698,31 @@ local function discover_hero()
     -- `consider` decides whether this actor replaces the one we hold (it only does so for the pawn)
     if complete and full_name(pawn) == state.actor_name then return end
 
-    -- The pawn's own part components, found by owner instead of `K2_GetComponentsByClass`: the TArray
-    -- that call returns comes back as null wrappers in this build (see the note on `children_of`), so the
-    -- enumeration was silently empty - which is exactly why polling "never saw the hero" and the object
-    -- listener had to cover for it. `FindAllOf` works, and its cost only matters while the hero is still
-    -- unknown: once he is adopted this function returns above, every time.
+    -- Fast O(1) path: look up the player pawn's own CharacterMesh0 and carrier part directly via
+    -- StaticFindObject. When wearing a vanilla / native-swap outfit (not Yae/Raiden), this avoids
+    -- walking all SkeletalMeshComponents in the world every 2 seconds.
     local pawn_name = full_name(pawn)
+    local pawn_path = pawn_name and pawn_name:gsub("^%S+%s+", "") or nil
+    if pawn_path ~= nil then
+        local direct_body = usable(StaticFindObject(pawn_path .. ".CharacterMesh0"))
+        if direct_body ~= nil and full_name(soft(function() return direct_body:GetOwner() end)) == pawn_name then
+            if matches_any(mesh_name(direct_body), config.source_mesh_names) then
+                consider(direct_body)
+            end
+            for _, part_name in ipairs({ "meshBand", "meshhead" }) do
+                local part = usable(StaticFindObject(pawn_path .. "." .. part_name))
+                if part ~= nil and full_name(soft(function() return part:GetOwner() end)) == pawn_name then
+                    local pname = mesh_name(part)
+                    if is_carrier_mesh(pname) and bone_count(part) ~= 274 then
+                        consider(part)
+                    end
+                end
+            end
+            return
+        end
+    end
+
+    -- Fallback when the pawn uses an unexpected component layout without CharacterMesh0.
     local objects = try("FindAllOf SkeletalMeshComponent",
         function() return FindAllOf("SkeletalMeshComponent") end)
     if type(objects) ~= "table" then return end

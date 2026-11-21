@@ -156,8 +156,11 @@ return function(ctx)
     end
 
     function wardrobe.find_preview_component()
+        -- Once EquipOutfit / ApplyOutfitVisual hooks are active, opening or switching outfits in the
+        -- wardrobe populates wardrobe.comp directly; avoid scanning all UObjects every 2s during gameplay.
+        if wardrobe.hooked then return nil end
         if state.tick < (wardrobe.discovery_tick or 0) then return nil end
-        wardrobe.discovery_tick = state.tick + 4
+        wardrobe.discovery_tick = state.tick + 20
         local found, count = nil, 0
         for _, comp in pairs(soft(function() return FindAllOf("BP_AppearanceComp_C") end) or {}) do
             if usable(comp) and not is_cdo(comp) then
