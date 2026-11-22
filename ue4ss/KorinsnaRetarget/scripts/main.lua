@@ -320,6 +320,7 @@ local drop_target
 local targets = {
     tick = -100000,
     near_tick = -100000,
+    fallback_done = false,
     weapons = {}, weapon_seen = {},
     scabbards = {}, scabbard_seen = {},
     back = {}, back_seen = {},
@@ -329,6 +330,7 @@ local targets = {
 local function reset_targets()
     targets.tick = -100000
     targets.near_tick = -100000
+    targets.fallback_done = false
     for _, key in ipairs({ "weapons", "scabbards", "back" }) do targets[key] = {} end
     for _, key in ipairs({ "weapon_seen", "scabbard_seen", "back_seen", "ignored" }) do targets[key] = {} end
 end
@@ -2005,18 +2007,21 @@ local function refresh_targets_near_hero()
     if state.actor_name == nil then return end
     if targets.near_tick == state.tick then return end
     targets.near_tick = state.tick
-    local seen_roots = {}
+    local roots = {}
     local actor_root = valid(state.actor)
         and usable(soft(function() return state.actor:K2_GetRootComponent() end)) or nil
-    for _, root in ipairs({ actor_root, state.source, state.body or state.carrier }) do
-        if valid(root) then
-            local root_key = full_name(root)
-            if root_key ~= nil and not seen_roots[root_key] then
-                seen_roots[root_key] = true
-                local list = children_of(root, {})
-                for index = 1, #list do
-                    classify_target(list[index])
-                end
+    if actor_root ~= nil then roots[#roots + 1] = actor_root end
+    if valid(state.source) then roots[#roots + 1] = state.source end
+    local carrier = state.body or state.carrier
+    if valid(carrier) then roots[#roots + 1] = carrier end
+    local seen_roots = {}
+    for _, root in ipairs(roots) do
+        local root_key = full_name(root)
+        if root_key ~= nil and not seen_roots[root_key] then
+            seen_roots[root_key] = true
+            local list = children_of(root, {})
+            for index = 1, #list do
+                classify_target(list[index])
             end
         end
     end
@@ -2024,6 +2029,20 @@ end
 
 refresh_targets = function()
     refresh_targets_near_hero()
+    -- One-shot fallback per hero if local subtree walk found no weapons yet (never periodic).
+    if state.aligned and #targets.weapons == 0 and not targets.fallback_done then
+        targets.fallback_done = true
+        local objects = soft(function() return FindAllOf("SkeletalMeshComponent") end)
+        if type(objects) == "table" then
+            for _, obj in pairs(objects) do
+                if usable(obj) and not is_cdo(obj) then
+                    classify_target(obj)
+                end
+            end
+        end
+        trace2(string.format("targets (fallback): %d weapon(s), %d scabbard(s), %d back item(s)",
+            #targets.weapons, #targets.scabbards, #targets.back))
+    end
 end
 
 
@@ -3520,15 +3539,16 @@ local function hide_shared_parts()
             end
         end
     end
+    local roots = {}
     local actor_root = valid(state.actor)
         and usable(soft(function() return state.actor:K2_GetRootComponent() end)) or nil
-    for _, root in ipairs({ actor_root, state.source }) do
-        if valid(root) then
-            local parts = children_of(root, {})
-            local_count = local_count + #parts
-            for index = 1, #parts do
-                inspect_shared(parts[index])
-            end
+    if actor_root ~= nil then roots[#roots + 1] = actor_root end
+    if valid(state.source) then roots[#roots + 1] = state.source end
+    for _, root in ipairs(roots) do
+        local parts = children_of(root, {})
+        local_count = local_count + #parts
+        for index = 1, #parts do
+            inspect_shared(parts[index])
         end
     end
     if local_count == 0 then
