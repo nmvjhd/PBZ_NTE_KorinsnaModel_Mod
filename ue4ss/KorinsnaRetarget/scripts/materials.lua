@@ -73,14 +73,29 @@ return function(ctx)
                 local name = nil
                 pcall(function() name = entry.ParameterInfo.Name:ToString() end)
                 if name ~= nil and valid(texture) then
-                    local ok = pcall(function()
+                    local ok_layer = pcall(function()
                         instance:SetTextureParameterValueByInfo(
                             { Name = FName(name), Association = LAYER_PARAMETER, Index = 0 }, texture)
                     end)
-                    if ok then applied = applied + 1 end
+                    local ok_global = pcall(function()
+                        instance:SetTextureParameterValue(FName(name), texture)
+                    end)
+                    if ok_layer or ok_global then applied = applied + 1 end
                 end
             end)
         end)
+        local scalars = type(config.material_scalars) == "table" and config.material_scalars[index] or nil
+        if type(scalars) == "table" then
+            for sname, svalue in pairs(scalars) do
+                pcall(function()
+                    instance:SetScalarParameterValueByInfo(
+                        { Name = FName(sname), Association = LAYER_PARAMETER, Index = 0 }, svalue)
+                end)
+                pcall(function()
+                    instance:SetScalarParameterValue(FName(sname), svalue)
+                end)
+            end
+        end
         return instance, applied
     end
 

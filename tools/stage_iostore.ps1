@@ -15,6 +15,8 @@ param(
         "Hun_Skin_Skeleton",
         "Korinsna/Source/",           # authoring-only preview mesh + donor skeleton
         "MI_ZeroHun_",                # placeholder material instances used to author the slot order
+        "MI_EliteBoss_MuXiaoKui_",    # ditto (female skin SSS host instance)
+        "MI_NPC_HuanGui_",            # ditto (female skin SSS host instance)
         "MI_Korinsna_",               # legacy self-made instances (no shaders in this build)
         "M_Korinsna_Toon"             # ditto
     ),

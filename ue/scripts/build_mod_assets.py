@@ -20,7 +20,8 @@ STARTED_AT = time.time()
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-TEX_DIR = "D:/Code/personal/pbz-game-mod/reference/PBZ_NTE_KorinsnaModel_Mod/KorinsnaModel/textures"
+_REF_ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+TEX_DIR = os.path.join(_REF_ROOT, "KorinsnaModel", "textures").replace("\\", "/")
 
 HOST_MI_DIR = "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Material"
 HOST_TEX_DIR = "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Textures"
@@ -137,8 +138,14 @@ if LAYOUT_PATH:
             if sorted(_textures) != ["ARM", "BC", "N"] or not _slot.get("parent"):
                 raise SystemExit("material layout %s: slot %d needs a parent and BC/ARM/N textures"
                                  % (LAYOUT_PATH, _index))
+            _extra = {}
+            for _pname, _spec in _slot.get("extra_textures", {}).items():
+                if not isinstance(_spec, dict) or "tga" not in _spec or _spec.get("kind") not in ("albedo", "mask", "normal"):
+                    raise SystemExit("material layout %s: slot %d extra_textures[%s] needs tga and kind"
+                                     % (LAYOUT_PATH, _index, _pname))
+                _extra[_pname] = {"tga": _spec["tga"], "kind": _spec["kind"]}
             SLOTS.append(_slot["parent"])
-            OWN_SPEC[_index] = {"textures": dict(_textures), "replaces": _slot.get("replaces")}
+            OWN_SPEC[_index] = {"textures": dict(_textures), "extra_textures": _extra, "replaces": _slot.get("replaces")}
         else:
             SLOTS.append(_slot)
     TEXTURES = [tuple(entry) for entry in _layout.get("textures", [])]
@@ -249,6 +256,9 @@ for own_slot in sorted(OWN_SPEC):
         stale = "%s_%s" % (spec["replaces"], suffix) if spec["replaces"] else None
         WORK.append((OWN_DIR, "T_Own_%02d_%s" % (own_slot, suffix), spec["textures"][suffix], KIND[suffix],
                      own_slot, suffix, stale))
+    for pname, espec in spec.get("extra_textures", {}).items():
+        WORK.append((OWN_DIR, "T_Own_%02d_%s" % (own_slot, pname), espec["tga"], espec["kind"],
+                     own_slot, pname, None))
 for folder, name, tga, kind in TEXTURES:
     own_slot, suffix = own_slot_of(name)
     if own_slot is not None and own_slot not in OWN_SPEC:
@@ -288,7 +298,7 @@ for folder, name, tga, kind, own_slot, suffix, stale in WORK:
 STAND_INS = {}   # host instance path -> stand-in built this run; several own slots may share one parent
 
 
-def parameter_stand_in(path, textures):
+def parameter_stand_in(path, textures, extra_specs=None):
     """A material at a game instance's path that exposes the texture parameters a child overrides.
 
     Built once per path and run: rebuilding it would delete the stand-in an earlier slot's child already
@@ -303,9 +313,15 @@ def parameter_stand_in(path, textures):
     if material is None:
         return None
     sampler = unreal.MaterialSamplerType
+    kind_sampler = {
+        "albedo": "SAMPLERTYPE_VIRTUAL_COLOR",
+        "mask": "SAMPLERTYPE_VIRTUAL_LINEAR_COLOR",
+        "normal": "SAMPLERTYPE_VIRTUAL_NORMAL",
+    }
     layout = (("Albedo", "BC", "RGB", unreal.MaterialProperty.MP_BASE_COLOR, "SAMPLERTYPE_VIRTUAL_COLOR"),
               ("Mix", "ARM", "G", unreal.MaterialProperty.MP_ROUGHNESS, "SAMPLERTYPE_VIRTUAL_LINEAR_COLOR"),
               ("Normal", "N", "RGB", unreal.MaterialProperty.MP_NORMAL, "SAMPLERTYPE_VIRTUAL_NORMAL"))
+    base_node = None
     for row, (param, key, output, target, sampler_name) in enumerate(layout):
         node = MEL.create_material_expression(material, unreal.MaterialExpressionTextureSampleParameter2D,
                                               -420, row * 260)
@@ -315,7 +331,28 @@ def parameter_stand_in(path, textures):
             node.set_editor_property("sampler_type", getattr(sampler, sampler_name))
         except Exception as error:                    # noqa: BLE001 - the stand-in never ships
             log("  stand-in sampler %s not set: %s" % (param, error))
-        MEL.connect_material_property(node, output, target)
+        if param == "Albedo":
+            base_node = node
+        else:
+            MEL.connect_material_property(node, output, target)
+    if extra_specs:
+        chain_node, chain_out = base_node, "RGB"
+        for idx, (param, espec) in enumerate(extra_specs.items(), start=3):
+            node = MEL.create_material_expression(material, unreal.MaterialExpressionTextureSampleParameter2D,
+                                                  -420, idx * 260)
+            node.set_editor_property("parameter_name", param)
+            node.set_editor_property("texture", textures[param])
+            try:
+                node.set_editor_property("sampler_type", getattr(sampler, kind_sampler[espec["kind"]]))
+            except Exception as error:                # noqa: BLE001 - the stand-in never ships
+                log("  stand-in sampler %s not set: %s" % (param, error))
+            add_node = MEL.create_material_expression(material, unreal.MaterialExpressionAdd, -160, idx * 260)
+            MEL.connect_material_expressions(chain_node, chain_out, add_node, "A")
+            MEL.connect_material_expressions(node, "RGB", add_node, "B")
+            chain_node, chain_out = add_node, ""
+        MEL.connect_material_property(chain_node, chain_out, unreal.MaterialProperty.MP_BASE_COLOR)
+    else:
+        MEL.connect_material_property(base_node, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.recompile_material(material)
     EAL.save_loaded_asset(material, False)
     STAND_INS[path] = material
@@ -335,9 +372,12 @@ mi_slots = []
 for slot_index, mi_path in enumerate(SLOTS):
     if slot_index in OWN_SLOTS:
         textures = OWN_TEXTURES.get(slot_index, {})
-        if sorted(textures) != ["ARM", "BC", "N"]:
-            raise SystemExit("own slot %d is missing textures: %s" % (slot_index, sorted(textures)))
-        parent = parameter_stand_in(mi_path, textures)
+        extra_specs = OWN_SPEC.get(slot_index, {}).get("extra_textures", {})
+        needed_keys = ["ARM", "BC", "N"] + list(extra_specs.keys())
+        missing_keys = [k for k in needed_keys if k not in textures]
+        if missing_keys:
+            raise SystemExit("own slot %d is missing textures: %s" % (slot_index, missing_keys))
+        parent = parameter_stand_in(mi_path, textures, extra_specs)
         if parent is None:
             raise SystemExit("could not create the parameter stand-in at %s" % mi_path)
         child_path = "%s/MI_Own_%02d" % (OWN_DIR, slot_index)
@@ -345,14 +385,15 @@ for slot_index, mi_path in enumerate(SLOTS):
         child = AT.create_asset("MI_Own_%02d" % slot_index, OWN_DIR, unreal.MaterialInstanceConstant,
                                 unreal.MaterialInstanceConstantFactoryNew())
         MEL.set_material_instance_parent(child, parent)
-        for param, key in (("Albedo", "BC"), ("Mix", "ARM"), ("Normal", "N")):
+        param_pairs = [("Albedo", "BC"), ("Mix", "ARM"), ("Normal", "N")] + [(p, p) for p in extra_specs]
+        for param, key in param_pairs:
             # the return value is not a success flag (it is False even when the override is stored), so the
             # stored overrides are read back below instead
             MEL.set_material_instance_texture_parameter_value(child, param, textures[key])
         MEL.update_material_instance(child)
         stored = {str(v.get_editor_property("parameter_info").get_editor_property("name")):
                   v.get_editor_property("parameter_value") for v in child.get_editor_property("texture_parameter_values")}
-        for param, key in (("Albedo", "BC"), ("Mix", "ARM"), ("Normal", "N")):
+        for param, key in param_pairs:
             have = stored.get(param)
             log("  own slot %d: %s = %s" % (slot_index, param, have.get_path_name() if have else None))
             if have is None or have.get_path_name() != textures[key].get_path_name():
