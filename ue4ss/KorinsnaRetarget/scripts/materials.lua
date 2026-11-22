@@ -100,24 +100,53 @@ return function(ctx)
     end
 
     function materials.apply_own(component, label)
-        local holders = own_holders(component)
-        if holders == nil or next(holders) == nil then return end
         local key = full_name(component)
         if key == nil then return end
         if state.own_instances == nil then state.own_instances = {} end
         local instances = state.own_instances[key]
+        local prefix = label or "own material"
+
+        -- Fast path: once all own dynamic instances are built for this component, verify slots
+        -- directly against cached instance names without re-validating every holder each scan.
+        if instances ~= nil and instances._ready then
+            local all_alive = true
+            for index, instance in pairs(instances._slots) do
+                if valid(instance) then
+                    local have = nil
+                    pcall(function() have = component:GetMaterial(index) end)
+                    local have_name = valid(have) and full_name(have) or "<none>"
+                    local want_name = instances._names[index]
+                    if want_name ~= have_name then
+                        local ok = pcall(function() component:SetMaterial(index, instance) end)
+                        trace(string.format("%s: slot %d was %s -> own instance restored (%s)", prefix, index,
+                            tostring(short_name(have_name)), ok and "ok" or "FAILED"))
+                    end
+                else
+                    all_alive = false
+                    instances._slots[index] = nil
+                    instances._names[index] = nil
+                end
+            end
+            if all_alive then return end
+            instances._ready = false
+        end
+
+        local holders = own_holders(component)
+        if holders == nil or next(holders) == nil then return end
         if instances == nil then
-            instances = {}
+            instances = { _slots = {}, _names = {}, _ready = false }
             state.own_instances[key] = instances
         end
-        local prefix = label or "own material"
+        local all_built = true
         for index, holder in pairs(holders) do
             local have = nil
             pcall(function() have = component:GetMaterial(index) end)
             local have_name = valid(have) and full_name(have) or "<none>"
-            local instance = instances[index]
+            local instance = instances._slots[index]
             if valid(instance) then
-                if full_name(instance) ~= have_name then
+                local want_name = instances._names[index] or full_name(instance)
+                instances._names[index] = want_name
+                if want_name ~= have_name then
                     local ok = pcall(function() component:SetMaterial(index, instance) end)
                     trace(string.format("%s: slot %d was %s -> own instance restored (%s)", prefix, index,
                         tostring(short_name(have_name)), ok and "ok" or "FAILED"))
@@ -125,22 +154,27 @@ return function(ctx)
             else
                 local made, applied = build_own_instance(component, index, holder)
                 if made ~= nil then
-                    instances[index] = made
+                    instances._slots[index] = made
+                    instances._names[index] = full_name(made)
                     trace(string.format("%s: slot %d -> dynamic instance of %s with %d texture(s)", prefix, index,
                         tostring(short_name(full_name(holder) or "?")), applied))
-                elseif not state.own_failed then
-                    state.own_failed = true
-                    trace(string.format("%s: slot %d could not build a dynamic instance", prefix, index))
+                else
+                    all_built = false
+                    if not state.own_failed then
+                        state.own_failed = true
+                        trace(string.format("%s: slot %d could not build a dynamic instance", prefix, index))
+                    end
                 end
             end
         end
+        instances._ready = all_built
     end
 
     local function own_slot_active(component, index)
         if state.own_instances == nil then return false end
         local key = full_name(component)
         local instances = key ~= nil and state.own_instances[key] or nil
-        return instances ~= nil and instances[index] ~= nil
+        return instances ~= nil and instances._slots ~= nil and instances._slots[index] ~= nil
     end
 
     function materials.guard(component, label)
@@ -174,7 +208,7 @@ return function(ctx)
     function materials.remove_ours(obj, key)
         local ours = {}
         local instances = state.own_instances and state.own_instances[key] or nil
-        for index, instance in pairs(instances or {}) do
+        for index, instance in pairs((instances and instances._slots) or {}) do
             local name = valid(instance) and full_name(instance) or nil
             if name ~= nil then ours[index] = { [name] = true } end
         end

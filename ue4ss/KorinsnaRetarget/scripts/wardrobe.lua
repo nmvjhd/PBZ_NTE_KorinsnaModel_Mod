@@ -143,7 +143,7 @@ return function(ctx)
                 wardrobe.reported_busy = true
                 trace("wardrobe: panel already shows '" .. tostring(title) .. "', not overwritten")
             end
-            if panel ~= nil and free and soft(function() return panel:IsVisible() end) ~= false then
+            if panel ~= nil and free and title ~= (text.name or "") and soft(function() return panel:IsVisible() end) ~= false then
                 local name_ok = wardrobe.set_widget_text(soft(function() return panel.ItemNameText end), text.name or "", "title")
                 local desc_ok = wardrobe.set_widget_text(soft(function() return panel.DetailText end), text.desc or "", "description")
                 if name_ok or desc_ok then written = written + 1 end
@@ -218,15 +218,27 @@ return function(ctx)
                 trace_problem("wardrobe: preview taken over (" .. tostring(current_mesh) .. ", " .. tostring(source) .. ")")
             end
             if orig.body then
-                pcall(function() orig.body:SetRenderInMainPass(false) end)
-                pcall(function() orig.body:SetCastShadow(false) end)
+                if soft(function() return orig.body.bRenderInMainPass end) ~= false then
+                    pcall(function() orig.body:SetRenderInMainPass(false) end)
+                end
+                if soft(function() return orig.body.CastShadow end) ~= false then
+                    pcall(function() orig.body:SetCastShadow(false) end)
+                end
             end
             for _, part in ipairs({ orig.head, orig.brow }) do
                 if part then
-                    pcall(function() part:SetVisibility(false, false) end)
-                    pcall(function() part:SetHiddenInGame(true, false) end)
-                    pcall(function() part:SetRenderInMainPass(false) end)
-                    pcall(function() part:SetCastShadow(false) end)
+                    if soft(function() return part:IsVisible() end) ~= false then
+                        pcall(function() part:SetVisibility(false, false) end)
+                    end
+                    if soft(function() return part.bHiddenInGame end) ~= true then
+                        pcall(function() part:SetHiddenInGame(true, false) end)
+                    end
+                    if soft(function() return part.bRenderInMainPass end) ~= false then
+                        pcall(function() part:SetRenderInMainPass(false) end)
+                    end
+                    if soft(function() return part.CastShadow end) ~= false then
+                        pcall(function() part:SetCastShadow(false) end)
+                    end
                 end
             end
             materials.apply_own(band, "preview")

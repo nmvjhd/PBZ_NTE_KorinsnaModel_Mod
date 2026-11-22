@@ -319,15 +319,18 @@ local refresh_targets
 local drop_target
 local targets = {
     tick = -100000,
+    near_tick = -100000,
     weapons = {}, weapon_seen = {},
     scabbards = {}, scabbard_seen = {},
     back = {}, back_seen = {},
+    ignored = {},
 }
 
 local function reset_targets()
     targets.tick = -100000
+    targets.near_tick = -100000
     for _, key in ipairs({ "weapons", "scabbards", "back" }) do targets[key] = {} end
-    for _, key in ipairs({ "weapon_seen", "scabbard_seen", "back_seen" }) do targets[key] = {} end
+    for _, key in ipairs({ "weapon_seen", "scabbard_seen", "back_seen", "ignored" }) do targets[key] = {} end
 end
 
 -- Log levels, and the whole point of the two install profiles:
@@ -875,15 +878,43 @@ local function hide_part(component, label)
     trace("hidden " .. label)
 end
 
+-- Check current render flags before mutating: unconditionally calling SetRenderInMainPass /
+-- SetCastShadow / SetVisibility every scan marks render state dirty on the render thread and
+-- invalidates Virtual Shadow Map pages in UE5.
+local function ensure_hidden_flags(component, include_visibility)
+    if include_visibility then
+        if soft(function() return component:IsVisible() end) ~= false then
+            try("SetVisibility", function() component:SetVisibility(false, false) end)
+        end
+        if soft(function() return component.bHiddenInGame end) ~= true then
+            try("SetHiddenInGame", function() component:SetHiddenInGame(true, false) end)
+        end
+    end
+    if soft(function() return component.bRenderInMainPass end) ~= false then
+        try("SetRenderInMainPass", function() component:SetRenderInMainPass(false) end)
+    end
+    if soft(function() return component.CastShadow end) ~= false then
+        try("SetCastShadow", function() component:SetCastShadow(false) end)
+    end
+end
+
 -- Only the component itself, never its children (bPropagateToChildren = false): the weapons and the waist
 -- knife are re-parented onto the carrier, and propagating would also un-hide their editor helpers (the
 -- red ArrowComponent and the collision box wireframe seen after switching outfits back and forth).
 local function show_part(component)
     if not valid(component) then return end
-    pcall(function() component:SetRenderInMainPass(true) end)
-    pcall(function() component:SetCastShadow(true) end)
-    pcall(function() component:SetHiddenInGame(false, false) end)
-    pcall(function() component:SetVisibility(true, false) end)
+    if soft(function() return component.bRenderInMainPass end) ~= true then
+        pcall(function() component:SetRenderInMainPass(true) end)
+    end
+    if soft(function() return component.CastShadow end) ~= true then
+        pcall(function() component:SetCastShadow(true) end)
+    end
+    if soft(function() return component.bHiddenInGame end) ~= false then
+        pcall(function() component:SetHiddenInGame(false, false) end)
+    end
+    if soft(function() return component:IsVisible() end) ~= true then
+        pcall(function() component:SetVisibility(true, false) end)
+    end
 end
 
 local function component_list(actor)
@@ -1093,19 +1124,10 @@ local function apply_hide(component)
     if key ~= nil and key == state.source_name then
         -- The body carries the clothes in this game, so it has to disappear completely; it must keep
         -- posing though, which is why the animation tick option is logged at start-up.
-        try("SetRenderInMainPass", function() component:SetRenderInMainPass(false) end)
-        try("SetCastShadow", function() component:SetCastShadow(false) end)
-        if config.hide_source_visibility then
-            -- bPropagateToChildren must stay false: our carrier component hangs under this one
-            try("SetVisibility", function() component:SetVisibility(false, false) end)
-            try("SetHiddenInGame", function() component:SetHiddenInGame(true, false) end)
-        end
+        ensure_hidden_flags(component, config.hide_source_visibility == true)
         return
     end
-    try("SetVisibility", function() component:SetVisibility(false, false) end)
-    try("SetHiddenInGame", function() component:SetHiddenInGame(true, false) end)
-    try("SetRenderInMainPass", function() component:SetRenderInMainPass(false) end)
-    try("SetCastShadow", function() component:SetCastShadow(false) end)
+    ensure_hidden_flags(component, true)
 end
 
 -- The game re-applies its wardrobe continuously, so the hidden parts are re-hidden on every scan.
@@ -1231,11 +1253,11 @@ local function drive_carrier(carrier)
         state.leader_cleared[key] = true
         local cleared = try("SetLeaderPoseComponent/clear",
             function() carrier:SetLeaderPoseComponent(nil, true, true) end)
+        try("SetEnableAnimation", function() carrier:SetEnableAnimation(true) end)
+        try("SetDisablePostProcessBlueprint",
+            function() carrier:SetDisablePostProcessBlueprint(false) end)
         trace("carrier: leader pose cleared (" .. tostring(cleared) .. ")")
     end
-    try("SetEnableAnimation", function() carrier:SetEnableAnimation(true) end)
-    try("SetDisablePostProcessBlueprint",
-        function() carrier:SetDisablePostProcessBlueprint(false) end)
 
     -- Only a component of our own needs its anim class replaced. On the game's own component the
     -- retarget graph runs as the post-process instance; setting the main class would tear that down.
@@ -1671,7 +1693,7 @@ local function watch_pose(target)
     end
     state.pose_post_missing = 0
 
-    if config.pose_bone_fallback then
+    if config.pose_bone_fallback and state.tick % 2 == 0 then
         watch_pose_bones(target)
     end
 end
@@ -1847,10 +1869,7 @@ local function hide_scabbards()
             -- gone, or the wardrobe re-used the component for something else
             drop_target(list, targets.scabbard_seen, index)
         else
-            try("SetVisibility", function() obj:SetVisibility(false, false) end)
-            try("SetHiddenInGame", function() obj:SetHiddenInGame(true, false) end)
-            try("SetRenderInMainPass", function() obj:SetRenderInMainPass(false) end)
-            try("SetCastShadow", function() obj:SetCastShadow(false) end)
+            ensure_hidden_flags(obj, true)
             if not state.hidden_names[key] then
                 state.hidden_names[key] = true
                 state.hidden[obj] = mesh
@@ -1944,6 +1963,10 @@ end
 local function classify_target(component)
     local key = full_name(component)
     if key == nil or key == state.carrier_name or key == state.source_name then return end
+    if targets.weapon_seen[key] or targets.scabbard_seen[key] or targets.back_seen[key]
+        or targets.ignored[key] then
+        return
+    end
     -- Only what belongs to / hangs off the hero, plus weapon actors (their owner name is
     -- `BP_Weapon_*`, not the hero). Everything else in the level is somebody else's business - that
     -- filter is what keeps NPC weapons and scabbards out of this.
@@ -1968,39 +1991,39 @@ local function classify_target(component)
     end
     if is_weapon_component(component, mesh) then
         note_target(targets.weapons, targets.weapon_seen, key)
+        return
+    end
+    if mesh ~= nil then
+        targets.ignored[key] = true
+    end
+end
+
+-- The per-scan way weapons, scabbards and back items are found: every weapon actor the hero holds or
+-- carries is attached below his own body, root component or our carrier, so walking just those local
+-- subtrees finds them in O(hero components) without a level-wide FindAllOf search.
+local function refresh_targets_near_hero()
+    if state.actor_name == nil then return end
+    if targets.near_tick == state.tick then return end
+    targets.near_tick = state.tick
+    local seen_roots = {}
+    local actor_root = valid(state.actor)
+        and usable(soft(function() return state.actor:K2_GetRootComponent() end)) or nil
+    for _, root in ipairs({ actor_root, state.source, state.body or state.carrier }) do
+        if valid(root) then
+            local root_key = full_name(root)
+            if root_key ~= nil and not seen_roots[root_key] then
+                seen_roots[root_key] = true
+                local list = children_of(root, {})
+                for index = 1, #list do
+                    classify_target(list[index])
+                end
+            end
+        end
     end
 end
 
 refresh_targets = function()
-    if state.tick - targets.tick < (config.target_rescan_scans or 1) then return end
-    targets.tick = state.tick
-    local objects = try("FindAllOf SkeletalMeshComponent",
-        function() return FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) ~= "table" then return end
-    for _, obj in pairs(objects) do
-        if usable(obj) and not is_cdo(obj) then
-            classify_target(obj)
-        end
-    end
-    trace2(string.format("targets: %d weapon(s), %d scabbard(s), %d back item(s) cached",
-        #targets.weapons, #targets.scabbards, #targets.back))
-end
-
--- The per-scan way weapons are found now: every weapon actor the hero holds or carries is attached
--- below his own body or below our carrier, so walking just those two subtrees finds them without a
--- level-wide search. This replaced the object listener, which had to cover the engine mesh classes and
--- therefore fired for the whole level (measured: ~14800 notifications in one fight, and the dispatch
--- alone stalled the game for about a second at a time).
-local function refresh_targets_near_hero()
-    if state.actor_name == nil then return end
-    for _, root in ipairs({ state.source, state.body or state.carrier }) do
-        if valid(root) then
-            local list = children_of(root, {})
-            for index = 1, #list do
-                classify_target(list[index])
-            end
-        end
-    end
+    refresh_targets_near_hero()
 end
 
 
@@ -2581,8 +2604,12 @@ end
 -- here: `collect_hero_garments` hides those for any hero-owned actor (copies included), so listing them
 -- would only walk the same class twice. Each entry is one level-wide search, and each search is a
 -- visible hitch, so the list stays as short as it can be while still covering the outfit.
+-- Never call FindAllOf("StaticMeshComponent") globally: UE5 levels hold tens of thousands of static
+-- meshes and iterating them in Lua causes multi-hundred-ms game-thread hitches + GC pauses. Instead,
+-- discover hero copy actors via SkeletalMeshComponent and walk each copy actor's own component subtree
+-- via K2_GetRootComponent() + GetChildrenComponents(true) to pick up any static accessories.
 local COPY_CLASSES = {
-    "SkeletalMeshComponent", "StaticMeshComponent",
+    "SkeletalMeshComponent",
 }
 
 local function copy_component_entry(obj, class_name, owner_name)
@@ -2652,15 +2679,35 @@ local function collect_copy_components()
     state.copy_list = {}
     state.copy_carriers = {}
     state.copy_index = {}
+    local copy_actors = {}
     for _, class_name in ipairs(COPY_CLASSES) do
         local objects = try("FindAllOf " .. class_name, function() return FindAllOf(class_name) end)
         if type(objects) == "table" then
             for _, obj in pairs(objects) do
                 if usable(obj) and not is_cdo(obj) then
-                    local owner_name = full_name(try("GetOwner", function() return obj:GetOwner() end))
+                    local owner = soft(function() return obj:GetOwner() end)
+                    local owner_name = usable(owner) and full_name(owner) or nil
                     if is_hero_copy(owner_name) then
                         add_copy_entry(obj, class_name, owner_name)
+                        if not copy_actors[owner_name] then
+                            copy_actors[owner_name] = owner
+                        end
                     end
+                end
+            end
+        end
+    end
+    for owner_name, owner in pairs(copy_actors) do
+        local root = valid(owner) and usable(soft(function() return owner:K2_GetRootComponent() end)) or nil
+        if root ~= nil then
+            local parts = children_of(root, {})
+            for index = 1, #parts do
+                local part = parts[index]
+                local part_owner = full_name(soft(function() return part:GetOwner() end))
+                if part_owner == owner_name then
+                    local class = soft(function() return part:GetClass() end)
+                    local class_name = class ~= nil and short_name(full_name(class)) or nil
+                    add_copy_entry(part, class_name, owner_name)
                 end
             end
         end
@@ -2728,10 +2775,7 @@ local function apply_copy_hiding()
                     -- copy's own Korinsna mesh is a leader-pose follower of it and retargets from it
                     force_anim_refresh(obj)
                 end
-                try("copy part SetVisibility", function() obj:SetVisibility(false, false) end)
-                try("copy part SetHiddenInGame", function() obj:SetHiddenInGame(true, false) end)
-                try("copy part SetRenderInMainPass", function() obj:SetRenderInMainPass(false) end)
-                try("copy part SetCastShadow", function() obj:SetCastShadow(false) end)
+                ensure_hidden_flags(obj, true)
             end
         end
     end
@@ -2858,10 +2902,7 @@ local function apply_cloth_hiding()
             if state.cloth_hidden == nil then state.cloth_hidden = {} end
             if in_outfit then
                 state.cloth_hidden[key] = true
-                try("cloth SetVisibility", function() obj:SetVisibility(false, false) end)
-                try("cloth SetHiddenInGame", function() obj:SetHiddenInGame(true, false) end)
-                try("cloth SetRenderInMainPass", function() obj:SetRenderInMainPass(false) end)
-                try("cloth SetCastShadow", function() obj:SetCastShadow(false) end)
+                ensure_hidden_flags(obj, true)
             elseif state.cloth_hidden[key] then
                 state.cloth_hidden[key] = nil
                 pcall(function() obj:SetHiddenInGame(false, false) end)
@@ -2992,8 +3033,7 @@ local function quiet_blank_parts()
     for index = 1, #list do
         local obj = resolve_component(list[index])
         if obj ~= nil then
-            try("part SetCastShadow", function() obj:SetCastShadow(false) end)
-            try("part SetRenderInMainPass", function() obj:SetRenderInMainPass(false) end)
+            ensure_hidden_flags(obj, false)
         end
     end
     if not state.quiet_reported and #list > 0 then
@@ -3053,7 +3093,9 @@ local function setup()
         reset_actor_state("the carrier no longer belongs to the hero actor")
         return
     end
-    refresh_from_actor(state.actor)
+    if not valid(state.source) or not valid(state.carrier) then
+        refresh_from_actor(state.actor)
+    end
     -- one hero-tree walk per scan feeds the weapon/scabbard/waist-knife caches below
     refresh_targets()
 
@@ -3134,14 +3176,6 @@ local function setup()
             end
         end
         dump_all()
-
-        -- A freshly adopted hero is the second (and last) moment that gets a level-wide rebuild of the
-        -- copy/garment caches, the first being a map change. Between those two events the spawn
-        -- listener maintains them, so a cutscene never has to re-walk the level.
-        state.copy_list = nil
-        state.copy_index = nil
-        state.cloth_list = nil
-        state.cloth_index = nil
     end
 
     local target = state.body or state.carrier
@@ -3179,7 +3213,9 @@ local function setup()
     -- system, and a re-enabled shadow on the retargeted mesh is what shows up as flickering black
     -- patches near the character.
     if config.carrier_cast_shadow == false and valid(target) then
-        try("carrier SetCastShadow", function() target:SetCastShadow(false) end)
+        if soft(function() return target.CastShadow end) ~= false then
+            try("carrier SetCastShadow", function() target:SetCastShadow(false) end)
+        end
     end
     -- Belt and braces for the black-silhouette failure: whatever took the carrier out of the main pass
     -- (the part silencing above, or the game's own wardrobe pass), it is drawn again within one scan.
@@ -3248,7 +3284,9 @@ local function setup()
 
     if state.aligned and not state.reported_sockets then
         state.reported_sockets = true
-        report_weapon_sockets()
+        if (config.log_level or 1) >= 2 then
+            report_weapon_sockets()
+        end
     end
 
     -- repeat the hero census a few times so wardrobe assignments made after start-up are caught
@@ -3268,9 +3306,15 @@ local function setup()
     -- Shadow casting is cleared too: the hidden body has no business casting a shadow, and its shadow
     -- is what showed up as flickering black patches while playing attack animations.
     if config.hide_source_visibility and valid(state.source) then
-        try("source SetVisibility", function() state.source:SetVisibility(false, false) end)
-        try("source SetHiddenInGame", function() state.source:SetHiddenInGame(true, false) end)
-        try("source SetCastShadow", function() state.source:SetCastShadow(false) end)
+        if soft(function() return state.source:IsVisible() end) ~= false then
+            try("source SetVisibility", function() state.source:SetVisibility(false, false) end)
+        end
+        if soft(function() return state.source.bHiddenInGame end) ~= true then
+            try("source SetHiddenInGame", function() state.source:SetHiddenInGame(true, false) end)
+        end
+        if soft(function() return state.source.CastShadow end) ~= false then
+            try("source SetCastShadow", function() state.source:SetCastShadow(false) end)
+        end
         -- Reflection writes are expensive and one is enough; the flag only has to be set once per
         -- hero (it is also what spammed the log with a line every scan). Give up after a few tries
         -- instead of retrying forever if this build's reflection does not have the property.
@@ -3283,9 +3327,7 @@ local function setup()
         end
     end
     if config.hide_body_render_pass and valid(state.source) then
-        try("source SetRenderInMainPass",
-            function() state.source:SetRenderInMainPass(false) end)
-        try("source SetCastShadow", function() state.source:SetCastShadow(false) end)
+        ensure_hidden_flags(state.source, false)
     end
 
     -- The alignment and the outfit hiding are done on later scans rather than with ExecuteWithDelay:
@@ -3448,21 +3490,52 @@ local function hide_shared_parts()
     state.shared_parts_tick = state.tick
     state.shared_parts_runs = runs + 1
 
-    local objects = nil
-    pcall(function() objects = FindAllOf("SkeletalMeshComponent") end)
-    if type(objects) ~= "table" then return end
-    for _, obj in pairs(objects) do
-        if usable(obj) and not is_cdo(obj) and belongs_to_actor(obj, state.actor_name) then
-            local key = full_name(obj)
-            local mesh = part_mesh_name(obj)
-            if key ~= nil and mesh ~= nil and key ~= state.carrier_name and key ~= state.source_name
-                and not is_carrier_mesh(mesh)
-                and contains_any(mesh, config.hide_prefixes) and not contains_any(mesh, config.keep_visible)
-                and not is_weapon_component(obj, mesh)
-                and (state.hidden_before == nil or state.hidden_before[key] == nil) then
-                remember_hidden(obj, tostring(mesh) .. " (" .. tostring(short_name(key)) .. ")")
-                trace("outfit: hiding the shared part " .. tostring(mesh))
+    local checked = {}
+    local function inspect_shared(obj)
+        if not usable(obj) or is_cdo(obj) or not belongs_to_actor(obj, state.actor_name) then return end
+        local key = full_name(obj)
+        if key == nil or checked[key] then return end
+        checked[key] = true
+        local mesh = part_mesh_name(obj)
+        if mesh ~= nil and key ~= state.carrier_name and key ~= state.source_name
+            and not is_carrier_mesh(mesh)
+            and contains_any(mesh, config.hide_prefixes) and not contains_any(mesh, config.keep_visible)
+            and not is_weapon_component(obj, mesh)
+            and (state.hidden_before == nil or state.hidden_before[key] == nil) then
+            remember_hidden(obj, tostring(mesh) .. " (" .. tostring(short_name(key)) .. ")")
+            trace("outfit: hiding the shared part " .. tostring(mesh))
+        end
+    end
+
+    -- Fast O(hero components) path: direct StaticFindObject for known hero parts + local subtree walk
+    -- from the hero actor's root and body. Avoids periodic level-wide FindAllOf("SkeletalMeshComponent").
+    local local_count = 0
+    local actor_path = state.actor_name and state.actor_name:gsub("^%S+%s+", "") or nil
+    if actor_path ~= nil then
+        for _, part_name in ipairs({ "meshhead", "Hun_Hat", "Hun_Hat01", "meshBrowLashCard", "meshScarf", "meshBand" }) do
+            local obj = StaticFindObject(actor_path .. "." .. part_name)
+            if usable(obj) then
+                local_count = local_count + 1
+                inspect_shared(obj)
             end
+        end
+    end
+    local actor_root = valid(state.actor)
+        and usable(soft(function() return state.actor:K2_GetRootComponent() end)) or nil
+    for _, root in ipairs({ actor_root, state.source }) do
+        if valid(root) then
+            local parts = children_of(root, {})
+            local_count = local_count + #parts
+            for index = 1, #parts do
+                inspect_shared(parts[index])
+            end
+        end
+    end
+    if local_count == 0 then
+        local objects = nil
+        pcall(function() objects = FindAllOf("SkeletalMeshComponent") end)
+        if type(objects) == "table" then
+            for _, obj in pairs(objects) do inspect_shared(obj) end
         end
     end
 end
@@ -3813,7 +3886,8 @@ local function adopt_garment(obj)
     end
 
     if not is_hero_copy(owner_name) then return 1 end
-    local root = actor_root_of(obj)
+    local root = usable(soft(function() return owner:K2_GetRootComponent() end))
+        or actor_root_of(obj)
     if not valid(root) then return 1 end
     local parts = children_of(root, {})
     local added = 0
