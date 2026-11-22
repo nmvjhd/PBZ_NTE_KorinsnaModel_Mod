@@ -265,8 +265,28 @@ local function apply_config_file(mod_root)
     -- Auto-discover modular per-character mods deployed as sibling `PBZChar_*/profile.lua` folders.
     if type(IterateGameDirectories) == "function" then
         local ok_dirs, dirs = pcall(IterateGameDirectories)
-        local mods_node = ok_dirs and dirs and dirs.Game and dirs.Game.Binaries and dirs.Game.Binaries.Win64
-            and dirs.Game.Binaries.Win64.ue4ss and dirs.Game.Binaries.Win64.ue4ss.Mods or nil
+        local mods_dir = mod_root:gsub("\\", "/"):gsub("/[^/]+$", "")
+        local want = mods_dir:lower()
+        local function find_mods_node(node, depth)
+            if type(node) ~= "table" or depth > 6 then return nil end
+            local here = type(node.__absolute_path) == "string" and node.__absolute_path:gsub("\\", "/"):lower() or nil
+            if here == want then return node end
+            if here and want:sub(1, #here + 1) ~= here .. "/" then return nil end
+            for k, sub in pairs(node) do
+                if type(k) == "string" and k:sub(1, 2) ~= "__" then
+                    local hit = find_mods_node(sub, depth + 1)
+                    if hit then return hit end
+                end
+            end
+            return nil
+        end
+        local mods_node = nil
+        if ok_dirs and type(dirs) == "table" then
+            for _, top in pairs(dirs) do
+                mods_node = find_mods_node(top, 0)
+                if mods_node then break end
+            end
+        end
         if type(mods_node) == "table" then
             local discovered = {}
             for name, node in pairs(mods_node) do
@@ -287,11 +307,11 @@ local function apply_config_file(mod_root)
                 local sources = type(config.source_mesh_names) == "table" and config.source_mesh_names or {}
                 for _, s in ipairs(sources) do seen_source[s] = true end
                 local first_retarget_applied = (next(config.profiles) ~= nil)
-                local count = 0
+                local loaded_names = {}
                 for _, item in ipairs(discovered) do
                     local entry = load_table(item.path .. "/profile.lua")
                     if type(entry) == "table" then
-                        count = count + 1
+                        loaded_names[#loaded_names + 1] = item.name
                         local kind = entry.kind or (entry.carrier_mesh_name and "retarget" or nil)
                         if kind == "retarget" and type(entry.carrier_mesh_name) == "string" then
                             if not first_retarget_applied then
@@ -333,8 +353,9 @@ local function apply_config_file(mod_root)
                     end
                 end
                 config.source_mesh_names = sources
-                if count > 0 then
-                    applied = (applied or "") .. " + " .. tostring(count) .. " PBZChar_* profile(s)"
+                if #loaded_names > 0 then
+                    print("[" .. MOD .. "] discovered " .. tostring(#loaded_names) .. " modular profile(s): " .. table.concat(loaded_names, ", ") .. "\n")
+                    applied = (applied or "") .. " + " .. tostring(#loaded_names) .. " PBZChar_* profile(s)"
                 end
             end
         end
