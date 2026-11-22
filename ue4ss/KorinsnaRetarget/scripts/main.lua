@@ -261,6 +261,85 @@ local function apply_config_file(mod_root)
             break
         end
     end
+
+    -- Auto-discover modular per-character mods deployed as sibling `PBZChar_*/profile.lua` folders.
+    if type(IterateGameDirectories) == "function" then
+        local ok_dirs, dirs = pcall(IterateGameDirectories)
+        local mods_node = ok_dirs and dirs and dirs.Game and dirs.Game.Binaries and dirs.Game.Binaries.Win64
+            and dirs.Game.Binaries.Win64.ue4ss and dirs.Game.Binaries.Win64.ue4ss.Mods or nil
+        if type(mods_node) == "table" then
+            local discovered = {}
+            for name, node in pairs(mods_node) do
+                if type(name) == "string" and name:sub(1, 8) == "PBZChar_" and type(node) == "table" then
+                    local dir_path = node.__absolute_path
+                    if type(dir_path) == "string" and dir_path ~= "" then
+                        discovered[#discovered + 1] = { name = name, path = dir_path:gsub("\\", "/") }
+                    end
+                end
+            end
+            table.sort(discovered, function(a, b) return a.name < b.name end)
+            if #discovered > 0 then
+                config.profiles = type(config.profiles) == "table" and config.profiles or {}
+                config.unlock_outfits = type(config.unlock_outfits) == "table" and config.unlock_outfits or {}
+                config.outfit_text = type(config.outfit_text) == "table" and config.outfit_text or {}
+                local seen_unlock, seen_source = {}, {}
+                for _, id in ipairs(config.unlock_outfits) do seen_unlock[id] = true end
+                local sources = type(config.source_mesh_names) == "table" and config.source_mesh_names or {}
+                for _, s in ipairs(sources) do seen_source[s] = true end
+                local first_retarget_applied = (next(config.profiles) ~= nil)
+                local count = 0
+                for _, item in ipairs(discovered) do
+                    local entry = load_table(item.path .. "/profile.lua")
+                    if type(entry) == "table" then
+                        count = count + 1
+                        local kind = entry.kind or (entry.carrier_mesh_name and "retarget" or nil)
+                        if kind == "retarget" and type(entry.carrier_mesh_name) == "string" then
+                            if not first_retarget_applied then
+                                for k, v in pairs(entry) do
+                                    if k ~= "kind" and k ~= "unlock_outfits" and k ~= "outfit_text" and k ~= "profiles" then
+                                        config[k] = v
+                                    end
+                                end
+                                first_retarget_applied = true
+                            end
+                            config.profiles[entry.carrier_mesh_name] = entry
+                            if type(entry.source_mesh_names) == "table" then
+                                for _, s in ipairs(entry.source_mesh_names) do
+                                    if not seen_source[s] then
+                                        seen_source[s] = true
+                                        sources[#sources + 1] = s
+                                    end
+                                end
+                            end
+                        end
+                        if type(entry.unlock_outfits) == "table" then
+                            for _, id in ipairs(entry.unlock_outfits) do
+                                if not seen_unlock[id] then
+                                    seen_unlock[id] = true
+                                    config.unlock_outfits[#config.unlock_outfits + 1] = id
+                                end
+                            end
+                        elseif type(entry.id) == "string" and not seen_unlock[entry.id] then
+                            seen_unlock[entry.id] = true
+                            config.unlock_outfits[#config.unlock_outfits + 1] = entry.id
+                        end
+                        if type(entry.outfit_text) == "table" then
+                            for id, txt in pairs(entry.outfit_text) do
+                                config.outfit_text[id] = txt
+                            end
+                        elseif type(entry.id) == "string" and type(entry.name) == "string" then
+                            config.outfit_text[entry.id] = { name = entry.name, desc = entry.desc or "" }
+                        end
+                    end
+                end
+                config.source_mesh_names = sources
+                if count > 0 then
+                    applied = (applied or "") .. " + " .. tostring(count) .. " PBZChar_* profile(s)"
+                end
+            end
+        end
+    end
+
     -- A dev install drops `config.dev.lua` next to config.lua; it turns the log and the diagnostics on
     -- (and nothing else), so the gameplay values stay identical between the two profiles. Release
     -- packages do not contain the file and therefore never load it.
