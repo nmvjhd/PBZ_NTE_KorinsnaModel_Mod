@@ -4382,6 +4382,16 @@ local function boot()
         if Key[config.toggle_key] then
             pcall(RegisterKeyBind, Key[config.toggle_key], toggle_ours)
         end
+        local reload_key = Key[config.live_physics_reload_key or "F8"]
+        if reload_key then
+            pcall(RegisterKeyBind, reload_key, function()
+                if type(ExecuteInGameThread) == "function" then
+                    ExecuteInGameThread(function() diagnostics.reload_live_physics(mod_dir) end)
+                else
+                    diagnostics.reload_live_physics(mod_dir)
+                end
+            end)
+        end
         if config.live_physics_keys then
             for _, entry in ipairs(PHYSICS_PRESET_KEYS) do
                 local key, preset = Key[entry.key], entry.preset

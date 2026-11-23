@@ -766,6 +766,159 @@ return function(ctx)
         trace(string.format("physics preset %s applied to %d/%d node(s)", preset_name, applied, #nodes))
     end
 
+    local function fname_str(v)
+        if v == nil then return "" end
+        local s = soft(function() return v:ToString() end)
+        if type(s) == "string" and s ~= "" then return s end
+        return tostring(v)
+    end
+
+    local function kawaii_root_bone(instance, node_name)
+        local node = soft(function() return instance[node_name] end)
+        if not node then return "" end
+        local base = soft(function() return node.SimulationBaseBone end)
+        local name = fname_str(base and soft(function() return base.BoneName end))
+        if name ~= "" and name ~= "None" then
+            return name
+        end
+        local root = soft(function() return node.RootBone end)
+        name = fname_str(root and soft(function() return root.BoneName end))
+        return name ~= "None" and name or ""
+    end
+
+    local function rule_matches(match, root_bone, node_name)
+        if match == nil or match == "*" or match == "" then return true end
+        if type(match) == "table" then
+            for _, item in ipairs(match) do
+                if rule_matches(item, root_bone, node_name) then return true end
+            end
+            return false
+        end
+        local pat = tostring(match)
+        return root_bone == pat or root_bone:find(pat, 1, true) ~= nil or node_name:find(pat, 1, true) ~= nil
+    end
+
+    local function build_kawaii_import_text(rule)
+        local ps = {}
+        local map = {
+            { "damping", "Damping" },
+            { "stiffness", "Stiffness" },
+            { "world_damping_location", "WorldDampingLocation" },
+            { "world_damping_rotation", "WorldDampingRotation" },
+            { "limit_angle", "LimitAngle" },
+            { "radius", "Radius" },
+        }
+        for _, kv in ipairs(map) do
+            if type(rule[kv[1]]) == "number" then
+                ps[#ps + 1] = string.format("%s=%.6f", kv[2], rule[kv[1]])
+            end
+        end
+        local parts = {}
+        if #ps > 0 then
+            parts[#parts + 1] = "PhysicsSettings=(" .. table.concat(ps, ",") .. ")"
+        end
+        if type(rule.gravity) == "table" and #rule.gravity == 3 then
+            parts[#parts + 1] = string.format("Gravity=(X=%.4f,Y=%.4f,Z=%.4f)",
+                tonumber(rule.gravity[1]) or 0, tonumber(rule.gravity[2]) or 0, tonumber(rule.gravity[3]) or 0)
+        elseif type(rule.gravity_z) == "number" then
+            parts[#parts + 1] = string.format("Gravity=(X=0.0,Y=0.0,Z=%.4f)", rule.gravity_z)
+        end
+        if type(rule.planar_constraint) == "string" and rule.planar_constraint ~= "" then
+            parts[#parts + 1] = "PlanarConstraint=" .. rule.planar_constraint
+        end
+        if #parts == 0 then return nil end
+        return "(" .. table.concat(parts, ",") .. ")"
+    end
+
+    -- Hot-reloads KorinsnaRetarget/live_physics.lua on F8 so KawaiiPhysics parameters can be tuned live
+    -- in-game without cooking or restarting. On first press (if the file does not exist), writes a
+    -- ready-to-edit template listing the current character's KawaiiPhysics root bones and live settings.
+    function diagnostics.reload_live_physics(dir)
+        local function emit_live(msg)
+            log(msg, 1)
+            local lf = io.open(tostring(dir or ".") .. "\\KorinsnaRetarget.log", "a")
+            if lf then
+                lf:write(string.format("[%s] %s\n", tostring(os.date("%H:%M:%S")), tostring(msg)))
+                lf:close()
+            end
+        end
+        local body = state.body or state.carrier
+        local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
+        if not usable(instance) then
+            emit_live("live_physics: no post-process instance yet")
+            return
+        end
+        local nodes = kawaii_node_names(instance)
+        if #nodes == 0 then
+            emit_live("live_physics: no kawaii nodes found")
+            return
+        end
+        local path = tostring(dir or ".") .. "\\live_physics.lua"
+        local fh = io.open(path, "r")
+        if not fh then
+            local out = io.open(path, "w")
+            if not out then
+                emit_live("live_physics: cannot write template to " .. path)
+                return
+            end
+            out:write("-- Live KawaiiPhysics override (press F8 in-game to hot-reload without restarting).\n")
+            out:write("-- Edit values below, save (Ctrl+S), switch back to the game, and press F8.\n")
+            out:write("-- match: root bone substring (or table of substrings, or '*' for all nodes).\n")
+            out:write("-- Copy final values back into characters/<char>/physics.json and run:\n")
+            out:write("--   .\\build.ps1 -Character <char> -Mode physics -Install\n")
+            out:write("return {\n")
+            for _, node in ipairs(nodes) do
+                local root_bone = kawaii_root_bone(instance, node.name)
+                local nv = soft(function() return instance[node.name] end)
+                local st = nv and soft(function() return nv.PhysicsSettings end)
+                local gv = nv and soft(function() return nv.Gravity end)
+                local damp = st and tonumber(soft(function() return st.Damping end)) or 0.30
+                local stiff = st and tonumber(soft(function() return st.Stiffness end)) or 0.10
+                local wdl = st and tonumber(soft(function() return st.WorldDampingLocation end)) or 0.80
+                local wdr = st and tonumber(soft(function() return st.WorldDampingRotation end)) or 0.80
+                local lim = st and tonumber(soft(function() return st.LimitAngle end)) or 0.0
+                local gz = gv and tonumber(soft(function() return gv.Z end)) or 0.0
+                out:write(string.format(
+                    "    -- { match = %q, damping = %.3f, stiffness = %.3f, world_damping_location = %.2f, world_damping_rotation = %.2f, limit_angle = %.1f, gravity_z = %.0f }, -- bones=%d\n",
+                    root_bone ~= "" and root_bone or node.name, damp, stiff, wdl, wdr, lim, gz, node.bones))
+            end
+            out:write("}\n")
+            out:close()
+            emit_live(string.format("live_physics: created template (%d nodes) at %s", #nodes, path))
+            return
+        end
+        fh:close()
+        local ok, rules = pcall(dofile, path)
+        if not ok or type(rules) ~= "table" then
+            emit_live("live_physics: failed to load " .. path .. ": " .. tostring(rules))
+            return
+        end
+        local updated_nodes, matched_nodes = 0, 0
+        local sample_roots = {}
+        for _, node in ipairs(nodes) do
+            local root_bone = kawaii_root_bone(instance, node.name)
+            if #sample_roots < 5 then sample_roots[#sample_roots + 1] = root_bone end
+            local merged = nil
+            for _, rule in ipairs(rules) do
+                if type(rule) == "table" and rule_matches(rule.match, root_bone, node.name) then
+                    merged = merged or {}
+                    for k, v in pairs(rule) do
+                        if k ~= "match" then merged[k] = v end
+                    end
+                end
+            end
+            if merged then
+                matched_nodes = matched_nodes + 1
+                local text = build_kawaii_import_text(merged)
+                if text and set_property(instance, node.name, text) then
+                    updated_nodes = updated_nodes + 1
+                end
+            end
+        end
+        emit_live(string.format("live_physics: reloaded %s -> matched=%d updated=%d/%d (%d rules, sample_roots=%s)",
+            path, matched_nodes, updated_nodes, #nodes, #rules, table.concat(sample_roots, ",")))
+    end
+
 
     function diagnostics.material_probe_next()
         material_probe_apply((material_probe.index or 0) + 1)
