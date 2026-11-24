@@ -4386,9 +4386,9 @@ local function boot()
         if reload_key then
             pcall(RegisterKeyBind, reload_key, function()
                 if type(ExecuteInGameThread) == "function" then
-                    ExecuteInGameThread(function() diagnostics.reload_live_physics(mod_dir) end)
+                    ExecuteInGameThread(function() diagnostics.open_physics_panel(mod_dir) end)
                 else
-                    diagnostics.reload_live_physics(mod_dir)
+                    diagnostics.open_physics_panel(mod_dir)
                 end
             end)
         end
@@ -4456,6 +4456,7 @@ local function boot()
                 end
             end
             local ok, err = pcall(scan)
+            pcall(diagnostics.poll_physics_panel, mod_dir)
             scan_last_cost = now_ms() - started
             scan_last_end = now_ms()
             if config.profile_scans and scan_last_cost >= (config.profile_slow_ms or 15) then

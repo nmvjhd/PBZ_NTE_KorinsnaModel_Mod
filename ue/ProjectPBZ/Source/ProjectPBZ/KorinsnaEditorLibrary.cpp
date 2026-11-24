@@ -1,4 +1,4 @@
-﻿#include "KorinsnaEditorLibrary.h"
+#include "KorinsnaEditorLibrary.h"
 
 #if WITH_EDITOR
 
@@ -129,6 +129,7 @@ namespace
 		/** Constrains the bone motion to a plane whose normal is one of the parent bone's axes. "X" is
 		 *  the setting that removed the left-right lurch on this rig while keeping forward/back sway. */
 		EPlanarConstraint PlanarConstraint = EPlanarConstraint::None;
+		EBoneForwardAxis BoneForwardAxis = EBoneForwardAxis::X_Positive;
 		TArray<FSphericalLimit> Spheres;
 		TArray<FCapsuleLimit> Capsules;
 
@@ -238,6 +239,32 @@ namespace
 		else
 		{
 			Profile.PlanarConstraint = EPlanarConstraint::None;
+		}
+
+		const FString AxisName = JsonString(Object, TEXT("bone_forward_axis"), FString());
+		if (AxisName.Equals(TEXT("X_Positive"), ESearchCase::IgnoreCase))
+		{
+			Profile.BoneForwardAxis = EBoneForwardAxis::X_Positive;
+		}
+		else if (AxisName.Equals(TEXT("X_Negative"), ESearchCase::IgnoreCase))
+		{
+			Profile.BoneForwardAxis = EBoneForwardAxis::X_Negative;
+		}
+		else if (AxisName.Equals(TEXT("Y_Positive"), ESearchCase::IgnoreCase))
+		{
+			Profile.BoneForwardAxis = EBoneForwardAxis::Y_Positive;
+		}
+		else if (AxisName.Equals(TEXT("Y_Negative"), ESearchCase::IgnoreCase))
+		{
+			Profile.BoneForwardAxis = EBoneForwardAxis::Y_Negative;
+		}
+		else if (AxisName.Equals(TEXT("Z_Positive"), ESearchCase::IgnoreCase))
+		{
+			Profile.BoneForwardAxis = EBoneForwardAxis::Z_Positive;
+		}
+		else if (AxisName.Equals(TEXT("Z_Negative"), ESearchCase::IgnoreCase))
+		{
+			Profile.BoneForwardAxis = EBoneForwardAxis::Z_Negative;
 		}
 
 		const FString SpaceName = JsonString(Object, TEXT("simulation_space"), FString());
@@ -433,6 +460,7 @@ namespace
 		Node.PhysicsSettings = Profile.Settings;
 		Node.SimulationSpace = Profile.SimulationSpace;
 		Node.PlanarConstraint = Profile.PlanarConstraint;
+		Node.BoneForwardAxis = Profile.BoneForwardAxis;
 		Node.DummyBoneLength = Profile.DummyBoneLength;
 		Node.TargetFramerate = Profile.TargetFramerate;
 		Node.bUpdatePhysicsSettingsInGame = Profile.bUpdateSettingsInGame;
@@ -1481,7 +1509,7 @@ FString UKorinsnaEditorLibrary::DescribeKawaiiPhysics(const FString& AssetPath)
 			}
 			Report.Appendf(TEXT("  kawaii[%d] root=%-14s hasBone=%s settings: damping=%.2f stiffness=%.2f"
 								 " worldDampLoc=%.2f worldDampRot=%.2f limitAngle=%.1f boneRadius=%.2f"
-								 " dummy=%.1f fps=%d space=%d wind=%s worldCol=%s ignoreSelf=%s"
+								 " dummy=%.1f fwdAxis=%d fps=%d space=%d wind=%s worldCol=%s ignoreSelf=%s"
 								 " base=%s spheres=%d exclude=%d capsules=%d alpha=%.2f gravityZ=%.0f\n"),
 				KawaiiCount - 1,
 				*AnimNode->RootBone.BoneName.ToString(),
@@ -1489,7 +1517,7 @@ FString UKorinsnaEditorLibrary::DescribeKawaiiPhysics(const FString& AssetPath)
 				AnimNode->PhysicsSettings.Damping, AnimNode->PhysicsSettings.Stiffness,
 				AnimNode->PhysicsSettings.WorldDampingLocation, AnimNode->PhysicsSettings.WorldDampingRotation,
 				AnimNode->PhysicsSettings.LimitAngle, AnimNode->PhysicsSettings.Radius,
-				AnimNode->DummyBoneLength, AnimNode->TargetFramerate,
+				AnimNode->DummyBoneLength, static_cast<int32>(AnimNode->BoneForwardAxis), AnimNode->TargetFramerate,
 				static_cast<int32>(AnimNode->SimulationSpace),
 				AnimNode->bEnableWind ? TEXT("ON") : TEXT("off"),
 				AnimNode->bAllowWorldCollision ? TEXT("ON") : TEXT("off"),

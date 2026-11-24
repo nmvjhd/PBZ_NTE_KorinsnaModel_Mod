@@ -826,31 +826,244 @@ return function(ctx)
         if type(rule.planar_constraint) == "string" and rule.planar_constraint ~= "" then
             parts[#parts + 1] = "PlanarConstraint=" .. rule.planar_constraint
         end
+        if type(rule.dummy_bone_length) == "number" then
+            parts[#parts + 1] = string.format("DummyBoneLength=%.4f", rule.dummy_bone_length)
+        end
         if #parts == 0 then return nil end
         return "(" .. table.concat(parts, ",") .. ")"
     end
 
-    -- Hot-reloads KorinsnaRetarget/live_physics.lua on F8 so KawaiiPhysics parameters can be tuned live
-    -- in-game without cooking or restarting. On first press (if the file does not exist), writes a
-    -- ready-to-edit template listing the current character's KawaiiPhysics root bones and live settings.
-    function diagnostics.reload_live_physics(dir)
-        local function emit_live(msg)
-            log(msg, 1)
-            local lf = io.open(tostring(dir or ".") .. "\\KorinsnaRetarget.log", "a")
-            if lf then
-                lf:write(string.format("[%s] %s\n", tostring(os.date("%H:%M:%S")), tostring(msg)))
-                lf:close()
+    local function panel_json_str(s)
+        return '"' .. tostring(s):gsub('[%z\1-\31\\"]', function(c)
+            local map = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+            return map[c] or string.format("\\u%04x", string.byte(c))
+        end) .. '"'
+    end
+
+    local function panel_json_encode(v)
+        local t = type(v)
+        if v == nil then return "null" end
+        if t == "boolean" then return v and "true" or "false" end
+        if t == "number" then
+            if v ~= v or v == math.huge or v == -math.huge then return "0" end
+            return string.format("%.6g", v)
+        end
+        if t == "string" then return panel_json_str(v) end
+        if t ~= "table" then return panel_json_str(tostring(v)) end
+        local n, max_i, is_arr = 0, 0, true
+        for k in pairs(v) do
+            n = n + 1
+            if type(k) ~= "number" or k < 1 or math.floor(k) ~= k then
+                is_arr = false
+            elseif k > max_i then
+                max_i = k
             end
         end
+        if is_arr and n > 0 and max_i == n then
+            local arr = {}
+            for i = 1, n do arr[i] = panel_json_encode(v[i]) end
+            return "[" .. table.concat(arr, ",") .. "]"
+        end
+        if n == 0 then return "[]" end
+        local keys = {}
+        for k in pairs(v) do keys[#keys + 1] = tostring(k) end
+        table.sort(keys)
+        local obj = {}
+        for _, k in ipairs(keys) do
+            obj[#obj + 1] = panel_json_str(k) .. ":" .. panel_json_encode(v[k])
+        end
+        return "{" .. table.concat(obj, ",") .. "}"
+    end
+
+    local function planar_to_name(val)
+        if val == nil then return "None" end
+        if type(val) == "number" then
+            local names = { [0] = "None", [1] = "X", [2] = "Y", [3] = "Z" }
+            return names[math.floor(val)] or "None"
+        end
+        local s = tostring(val)
+        local tail = s:match("([^:]+)$") or s
+        if tail == "X" or tail == "Y" or tail == "Z" or tail == "None" then return tail end
+        if tail == "0" then return "None" end
+        if tail == "1" then return "X" end
+        if tail == "2" then return "Y" end
+        if tail == "3" then return "Z" end
+        return "None"
+    end
+
+    local function write_text_atomic(path, content)
+        local tmp = path .. ".tmp"
+        local f = io.open(tmp, "wb")
+        if f then
+            f:write(content)
+            f:close()
+            os.remove(path)
+            if os.rename(tmp, path) then return true end
+        end
+        local f2 = io.open(path, "wb")
+        if not f2 then return false end
+        f2:write(content)
+        f2:close()
+        return true
+    end
+
+    local function collect_live_physics_snapshot(dir)
+        local body = state.body or state.carrier
+        local carrier_name = config.carrier_mesh_name or (valid(body) and part_mesh_name(body)) or "Unknown"
+        local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
+        local result = {
+            ts = tostring(os.date("%H:%M:%S")),
+            carrier = tostring(carrier_name),
+            ready = false,
+            error = "",
+            nodes = {},
+        }
+        if not usable(instance) then
+            result.error = "当前角色尚无物理实例（请先进入游戏画面）"
+        else
+            local nodes = kawaii_node_names(instance)
+            result.ready = (#nodes > 0)
+            if #nodes == 0 then
+                result.error = "当前角色未找到 KawaiiPhysics 节点"
+            end
+            for _, node in ipairs(nodes) do
+                local root_bone = kawaii_root_bone(instance, node.name)
+                local nv = soft(function() return instance[node.name] end)
+                local st = nv and soft(function() return nv.PhysicsSettings end)
+                local gv = nv and soft(function() return nv.Gravity end)
+                local planar = nv and soft(function() return nv.PlanarConstraint end)
+                local dummy = nv and tonumber(soft(function() return nv.DummyBoneLength end)) or 0.0
+                result.nodes[#result.nodes + 1] = {
+                    node_name = node.name,
+                    root_bone = root_bone ~= "" and root_bone or node.name,
+                    bones = node.bones,
+                    damping = st and tonumber(soft(function() return st.Damping end)) or 0.30,
+                    stiffness = st and tonumber(soft(function() return st.Stiffness end)) or 0.10,
+                    world_damping_location = st and tonumber(soft(function() return st.WorldDampingLocation end)) or 0.80,
+                    world_damping_rotation = st and tonumber(soft(function() return st.WorldDampingRotation end)) or 0.80,
+                    limit_angle = st and tonumber(soft(function() return st.LimitAngle end)) or 0.0,
+                    radius = st and tonumber(soft(function() return st.Radius end)) or 1.0,
+                    dummy_bone_length = dummy,
+                    gravity_z = gv and tonumber(soft(function() return gv.Z end)) or 0.0,
+                    planar_constraint = planar_to_name(planar),
+                }
+            end
+        end
+        local state_path = tostring(dir or ".") .. "\\.live_physics_state.json"
+        write_text_atomic(state_path, panel_json_encode(result))
+        return result
+    end
+
+    local function export_live_physics_file(dir)
+        local path = tostring(dir or ".") .. "\\live_physics.lua"
+        local out_path = tostring(dir or ".") .. "\\.live_physics_file.json"
+        local fh = io.open(path, "r")
+        if not fh then
+            write_text_atomic(out_path, panel_json_encode({ exists = false, error = "未找到 live_physics.lua", rules = {} }))
+            return false, "未找到 live_physics.lua"
+        end
+        fh:close()
+        local ok, rules = pcall(dofile, path)
+        if not ok or type(rules) ~= "table" then
+            local err = "解析 live_physics.lua 失败: " .. tostring(rules)
+            write_text_atomic(out_path, panel_json_encode({ exists = true, error = err, rules = {} }))
+            return false, err
+        end
+        local normalized = {}
+        for _, r in ipairs(rules) do
+            if type(r) == "table" then
+                local m = r.match
+                local m_list = {}
+                if type(m) == "table" then
+                    for _, item in ipairs(m) do m_list[#m_list + 1] = tostring(item) end
+                elseif m ~= nil and tostring(m) ~= "" then
+                    m_list[1] = tostring(m)
+                else
+                    m_list[1] = "*"
+                end
+                local gz = r.gravity_z
+                if gz == nil and type(r.gravity) == "table" then
+                    gz = tonumber(r.gravity[3])
+                end
+                normalized[#normalized + 1] = {
+                    match = m_list,
+                    damping = tonumber(r.damping),
+                    stiffness = tonumber(r.stiffness),
+                    world_damping_location = tonumber(r.world_damping_location),
+                    world_damping_rotation = tonumber(r.world_damping_rotation),
+                    limit_angle = tonumber(r.limit_angle),
+                    radius = tonumber(r.radius),
+                    dummy_bone_length = tonumber(r.dummy_bone_length),
+                    gravity_z = tonumber(gz),
+                    planar_constraint = r.planar_constraint and planar_to_name(r.planar_constraint) or nil,
+                }
+            end
+        end
+        write_text_atomic(out_path, panel_json_encode({ exists = true, error = "", rules = normalized }))
+        return true, string.format("已加载 live_physics.lua（%d 条规则）", #normalized)
+    end
+
+    local function emit_live_log(dir, msg)
+        log(msg, 1)
+        local lf = io.open(tostring(dir or ".") .. "\\KorinsnaRetarget.log", "a")
+        if lf then
+            lf:write(string.format("[%s] %s\n", tostring(os.date("%H:%M:%S")), tostring(msg)))
+            lf:close()
+        end
+    end
+
+    local function apply_live_rules(rules, dir, source_label)
         local body = state.body or state.carrier
         local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
         if not usable(instance) then
-            emit_live("live_physics: no post-process instance yet")
+            local msg = "live_physics: 当前无物理实例"
+            emit_live_log(dir, msg)
+            return false, msg, 0, 0, 0
+        end
+        local nodes = kawaii_node_names(instance)
+        if #nodes == 0 then
+            local msg = "live_physics: 未找到 KawaiiPhysics 节点"
+            emit_live_log(dir, msg)
+            return false, msg, 0, 0, 0
+        end
+        local updated_nodes, matched_nodes = 0, 0
+        for _, node in ipairs(nodes) do
+            local root_bone = kawaii_root_bone(instance, node.name)
+            local merged = nil
+            for _, rule in ipairs(rules) do
+                if type(rule) == "table" and rule_matches(rule.match, root_bone, node.name) then
+                    merged = merged or {}
+                    for k, v in pairs(rule) do
+                        if k ~= "match" then merged[k] = v end
+                    end
+                end
+            end
+            if merged then
+                matched_nodes = matched_nodes + 1
+                local text = build_kawaii_import_text(merged)
+                if text and set_property(instance, node.name, text) then
+                    updated_nodes = updated_nodes + 1
+                end
+            end
+        end
+        local msg = string.format("已应用(%s): 匹配 %d / 更新 %d / 总计 %d 个节点",
+            tostring(source_label or "panel"), matched_nodes, updated_nodes, #nodes)
+        emit_live_log(dir, "live_physics: " .. msg)
+        return true, msg, matched_nodes, updated_nodes, #nodes
+    end
+
+    -- Hot-reloads KorinsnaRetarget/live_physics.lua so KawaiiPhysics parameters can be tuned live
+    -- in-game without cooking or restarting.
+    function diagnostics.reload_live_physics(dir)
+        local body = state.body or state.carrier
+        local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
+        if not usable(instance) then
+            emit_live_log(dir, "live_physics: no post-process instance yet")
             return
         end
         local nodes = kawaii_node_names(instance)
         if #nodes == 0 then
-            emit_live("live_physics: no kawaii nodes found")
+            emit_live_log(dir, "live_physics: no kawaii nodes found")
             return
         end
         local path = tostring(dir or ".") .. "\\live_physics.lua"
@@ -858,14 +1071,10 @@ return function(ctx)
         if not fh then
             local out = io.open(path, "w")
             if not out then
-                emit_live("live_physics: cannot write template to " .. path)
+                emit_live_log(dir, "live_physics: cannot write template to " .. path)
                 return
             end
-            out:write("-- Live KawaiiPhysics override (press F8 in-game to hot-reload without restarting).\n")
-            out:write("-- Edit values below, save (Ctrl+S), switch back to the game, and press F8.\n")
-            out:write("-- match: root bone substring (or table of substrings, or '*' for all nodes).\n")
-            out:write("-- Copy final values back into characters/<char>/physics.json and run:\n")
-            out:write("--   .\\build.ps1 -Character <char> -Mode physics -Install\n")
+            out:write("-- Live KawaiiPhysics override (press F8 in-game to open tuning panel).\n")
             out:write("return {\n")
             for _, node in ipairs(nodes) do
                 local root_bone = kawaii_root_bone(instance, node.name)
@@ -884,39 +1093,88 @@ return function(ctx)
             end
             out:write("}\n")
             out:close()
-            emit_live(string.format("live_physics: created template (%d nodes) at %s", #nodes, path))
+            emit_live_log(dir, string.format("live_physics: created template (%d nodes) at %s", #nodes, path))
             return
         end
         fh:close()
         local ok, rules = pcall(dofile, path)
         if not ok or type(rules) ~= "table" then
-            emit_live("live_physics: failed to load " .. path .. ": " .. tostring(rules))
+            emit_live_log(dir, "live_physics: failed to load " .. path .. ": " .. tostring(rules))
             return
         end
-        local updated_nodes, matched_nodes = 0, 0
-        local sample_roots = {}
-        for _, node in ipairs(nodes) do
-            local root_bone = kawaii_root_bone(instance, node.name)
-            if #sample_roots < 5 then sample_roots[#sample_roots + 1] = root_bone end
-            local merged = nil
-            for _, rule in ipairs(rules) do
-                if type(rule) == "table" and rule_matches(rule.match, root_bone, node.name) then
-                    merged = merged or {}
-                    for k, v in pairs(rule) do
-                        if k ~= "match" then merged[k] = v end
-                    end
-                end
-            end
-            if merged then
-                matched_nodes = matched_nodes + 1
-                local text = build_kawaii_import_text(merged)
-                if text and set_property(instance, node.name, text) then
-                    updated_nodes = updated_nodes + 1
-                end
-            end
+        apply_live_rules(rules, dir, "live_physics.lua")
+    end
+
+    -- Opens (or focuses) the floating WinForms live physics tuning panel on F8.
+    function diagnostics.open_physics_panel(dir)
+        local root = tostring(dir or "."):gsub("/", "\\")
+        collect_live_physics_snapshot(root)
+        export_live_physics_file(root)
+        local ps1 = root .. "\\Scripts\\physics_panel.ps1"
+        local pf = io.open(ps1, "r")
+        if not pf then
+            emit_live_log(root, "live_physics: missing panel script " .. ps1 .. ", falling back to direct reload")
+            diagnostics.reload_live_physics(root)
+            return
         end
-        emit_live(string.format("live_physics: reloaded %s -> matched=%d updated=%d/%d (%d rules, sample_roots=%s)",
-            path, matched_nodes, updated_nodes, #nodes, #rules, table.concat(sample_roots, ",")))
+        pf:close()
+        local vbs = root .. "\\.launch_physics_panel.vbs"
+        local cmd = string.format(
+            'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "%s" -ModDir "%s"',
+            ps1, root)
+        local vbs_body = 'CreateObject("WScript.Shell").Run "' .. cmd:gsub('"', '""') .. '", 0, False\r\n'
+        write_text_atomic(vbs, vbs_body)
+        pcall(os.execute, string.format('wscript.exe //B //Nologo "%s"', vbs))
+        emit_live_log(root, "live_physics: opened F8 physics tuning panel")
+    end
+
+    -- Polled from the game thread loop to handle Apply / Refresh / Load requests from the F8 panel.
+    function diagnostics.poll_physics_panel(dir)
+        local root = tostring(dir or "."):gsub("/", "\\")
+        local cmd_path = root .. "\\.live_physics_cmd.lua"
+        local f = io.open(cmd_path, "r")
+        if not f then return end
+        f:close()
+        local ok, cmd = pcall(dofile, cmd_path)
+        os.remove(cmd_path)
+        local ack_path = root .. "\\.live_physics_ack.json"
+        if not ok or type(cmd) ~= "table" then
+            write_text_atomic(ack_path, panel_json_encode({
+                seq = 0, ok = false, action = "error",
+                message = "命令解析失败: " .. tostring(cmd),
+                ts = tostring(os.date("%H:%M:%S")),
+            }))
+            return
+        end
+        local seq = tonumber(cmd.seq) or 0
+        local action = tostring(cmd.action or "")
+        if action == "refresh" then
+            local snap = collect_live_physics_snapshot(root)
+            write_text_atomic(ack_path, panel_json_encode({
+                seq = seq, ok = snap.ready, action = action,
+                message = snap.ready
+                    and string.format("已读取当前角色(%s): %d 个物理节点", snap.carrier, #snap.nodes)
+                    or snap.error,
+                ts = tostring(os.date("%H:%M:%S")),
+            }))
+        elseif action == "load_file" then
+            collect_live_physics_snapshot(root)
+            local ok_f, msg_f = export_live_physics_file(root)
+            write_text_atomic(ack_path, panel_json_encode({
+                seq = seq, ok = ok_f, action = action,
+                message = msg_f,
+                ts = tostring(os.date("%H:%M:%S")),
+            }))
+        elseif action == "apply" then
+            local rules = type(cmd.rules) == "table" and cmd.rules or {}
+            local ok_a, msg_a, matched, updated, total = apply_live_rules(rules, root, "面板")
+            collect_live_physics_snapshot(root)
+            write_text_atomic(ack_path, panel_json_encode({
+                seq = seq, ok = ok_a, action = action,
+                message = msg_a, matched = matched, updated = updated, total = total,
+                ts = tostring(os.date("%H:%M:%S")),
+            }))
+        end
     end
 
 
