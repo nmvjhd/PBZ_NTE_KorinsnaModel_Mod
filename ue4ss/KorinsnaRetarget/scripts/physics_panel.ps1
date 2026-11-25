@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [string]$ModDir
 )
@@ -44,6 +44,9 @@ $script:seq = [int](Get-Date -UFormat '%s') % 100000
 $script:lastAckSeq = -1
 $script:pendingAction = ''
 $script:nodes = @()
+$script:materialSlots = @()
+$script:accBones = @()
+$script:accGroups = New-Object System.Collections.ArrayList
 $script:rules = New-Object System.Collections.ArrayList
 $script:suppressEvents = $false
 $script:carrierName = 'Unknown'
@@ -54,7 +57,8 @@ function Read-JsonFile($path) {
         $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
         if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
         return ($raw | ConvertFrom-Json)
-    } catch {
+    }
+    catch {
         return $null
     }
 }
@@ -96,10 +100,15 @@ function Guess-PartLabel($matchList) {
     $joined = ($matchList -join ',').ToLower()
     if ($joined -match 'spine1|breast') { return '胸部' }
     if ($joined -match 'sleeve') { return '长袖' }
-    if ($joined -match 'toufa|hair|bang') { return '头发' }
-    if ($joined -match 'xionglian|qianzhui|erhuan|fazan') { return '饰品' }
+    if ($joined -match 'toufa|hair|bang|braid|b116|b141|b149.*raiden') { return '头发/鬓发' }
+    if ($joined -match 'erhuan') { return '耳坠' }
+    if ($joined -match 'fazan') { return '发簪' }
+    if ($joined -match 'xionglian') { return '腹链' }
+    if ($joined -match 'qianzhui|b042') { return '腰前流苏' }
+    if ($joined -match 'b046') { return '蝴蝶结' }
+    if ($joined -match 'b061|b063') { return '背后垂布' }
     if ($joined -match 'b149|b15') { return '头巾' }
-    if ($joined -match 'b23|b24|skirt') { return '裙摆' }
+    if ($joined -match 'b23|b24|skirt|pelvis') { return '裙摆' }
     if ($joined -eq '*') { return '全部节点' }
     return ($matchList[0])
 }
@@ -116,14 +125,13 @@ function Build-GroupsFromNodes() {
     $script:rules.Clear()
     if ($null -eq $script:nodes -or $script:nodes.Count -eq 0) { return }
 
-    # Group nodes that share identical physics settings
     $groupMap = [ordered]@{}
     foreach ($n in $script:nodes) {
-        $key = "{0:F4}|{1:F4}|{2:F3}|{3:F3}|{4:F1}|{5:F2}|{6:F2}|{7:F0}|{8}" -f `
+        $key = "{0:F4}|{1:F4}|{2:F3}|{3:F3}|{4:F1}|{5:F2}|{6:F2}|{7:F0}|{8}|{9}" -f `
             [double]$n.damping, [double]$n.stiffness, `
             [double]$n.world_damping_location, [double]$n.world_damping_rotation, `
             [double]$n.limit_angle, [double]$n.radius, `
-            [double]$n.dummy_bone_length, [double]$n.gravity_z, [string]$n.planar_constraint
+            [double]$n.dummy_bone_length, [double]$n.gravity_z, [string]$n.planar_constraint, [string]$n.bone_forward_axis
         if (-not $groupMap.Contains($key)) {
             $groupMap[$key] = New-Object System.Collections.ArrayList
         }
@@ -135,20 +143,71 @@ function Build-GroupsFromNodes() {
         $first = $items[0]
         $roots = @($items | ForEach-Object { [string]$_.root_bone } | Select-Object -Unique)
         $rule = [ordered]@{
-            label = Guess-PartLabel $roots
-            match = $roots
-            damping = [double]$first.damping
-            stiffness = [double]$first.stiffness
+            label                  = Guess-PartLabel $roots
+            match                  = $roots
+            damping                = [double]$first.damping
+            stiffness              = [double]$first.stiffness
             world_damping_location = [double]$first.world_damping_location
             world_damping_rotation = [double]$first.world_damping_rotation
-            limit_angle = [double]$first.limit_angle
-            radius = [double]$first.radius
-            dummy_bone_length = [double]$first.dummy_bone_length
-            gravity_z = [double]$first.gravity_z
-            planar_constraint = [string]$first.planar_constraint
+            limit_angle            = [double]$first.limit_angle
+            radius                 = [double]$first.radius
+            dummy_bone_length      = [double]$first.dummy_bone_length
+            gravity_z              = [double]$first.gravity_z
+            planar_constraint      = [string]$first.planar_constraint
+            bone_forward_axis = if ($first.bone_forward_axis) { [string]$first.bone_forward_axis } else { 'X_Positive' }
         }
         [void]$script:rules.Add($rule)
     }
+}
+
+function Build-AccessoryGroups() {
+    $script:accGroups.Clear()
+    if ($null -eq $script:accBones -or $script:accBones.Count -eq 0) { return }
+
+    $map = [ordered]@{}
+    foreach ($b in $script:accBones) {
+        $bn = [string]$b.bone
+        $grpLabel = Guess-PartLabel @($bn)
+        if (-not $map.Contains($grpLabel)) {
+            $map[$grpLabel] = New-Object System.Collections.ArrayList
+        }
+        [void]$map[$grpLabel].Add($b)
+    }
+    foreach ($k in $map.Keys) {
+        $items = $map[$k]
+        $bones = @($items | ForEach-Object { [string]$_.bone })
+        $anyVisible = $false
+        foreach ($it in $items) {
+            if ([bool]$it.visible) { $anyVisible = $true; break }
+        }
+        $preview = ($bones | Select-Object -First 2) -join ', '
+        if ($bones.Count -gt 2) { $preview += ', ...' }
+        [void]$script:accGroups.Add([ordered]@{
+            label = $k
+            bones = $bones
+            visible = $anyVisible
+            title = ("{0} [{1}根] ({2})" -f $k, $bones.Count, $preview)
+        })
+    }
+}
+
+function Refresh-PartsLists() {
+    $script:suppressEvents = $true
+    $chkSlots.Items.Clear()
+    foreach ($s in $script:materialSlots) {
+        $idx = [int]$s.index
+        $nm = [string]$s.name
+        $pos = $chkSlots.Items.Add(("[{0}] {1}" -f $idx, $nm))
+        $chkSlots.SetItemChecked($pos, [bool]$s.visible)
+    }
+
+    Build-AccessoryGroups
+    $chkBones.Items.Clear()
+    foreach ($g in $script:accGroups) {
+        $pos = $chkBones.Items.Add([string]$g.title)
+        $chkBones.SetItemChecked($pos, [bool]$g.visible)
+    }
+    $script:suppressEvents = $false
 }
 
 function Load-StateFromDisk($rebuildRules) {
@@ -158,22 +217,26 @@ function Load-StateFromDisk($rebuildRules) {
         return $false
     }
     $script:carrierName = [string]$st.carrier
-    $script:nodes = @()
-    if ($null -ne $st.nodes) {
-        $script:nodes = @($st.nodes)
-    }
+    $script:nodes = if ($null -ne $st.nodes) { @($st.nodes) } else { @() }
+    $script:materialSlots = if ($null -ne $st.material_slots) { @($st.material_slots) } else { @() }
+    $script:accBones = if ($null -ne $st.accessory_bones) { @($st.accessory_bones) } else { @() }
+
     if ($st.ready) {
-        $lblHeader.Text = ("当前角色: {0}  |  共 {1} 个物理节点  |  同步时间: {2}" -f $script:carrierName, $script:nodes.Count, $st.ts)
-    } else {
+        $lblHeader.Text = ("当前角色: {0}  |  物理节点: {1}  |  材质槽: {2}  |  同步: {3}" -f `
+            $script:carrierName, $script:nodes.Count, $script:materialSlots.Count, $st.ts)
+    }
+    else {
         $lblHeader.Text = ("状态: {0}" -f $st.error)
     }
     if ($rebuildRules) {
         Build-GroupsFromNodes
         Refresh-RuleList 0
-    } else {
+    }
+    else {
         $idx = $lstRules.SelectedIndex
         Refresh-RuleList $idx
     }
+    Refresh-PartsLists
     return [bool]$st.ready
 }
 
@@ -195,23 +258,23 @@ function Load-LiveFileFromDisk() {
         if ($null -ne $r.match) { $mList = @($r.match | ForEach-Object { [string]$_ }) }
         if ($mList.Count -eq 0) { $mList = @('*') }
 
-        # Fill missing fields from first matching live node
         $ref = $null
         foreach ($n in $script:nodes) {
             if (Rule-MatchesNode $mList $n) { $ref = $n; break }
         }
         $rule = [ordered]@{
-            label = Guess-PartLabel $mList
-            match = $mList
-            damping = if ($null -ne $r.damping) { [double]$r.damping } elseif ($ref) { [double]$ref.damping } else { 0.20 }
-            stiffness = if ($null -ne $r.stiffness) { [double]$r.stiffness } elseif ($ref) { [double]$ref.stiffness } else { 0.08 }
+            label                  = Guess-PartLabel $mList
+            match                  = $mList
+            damping                = if ($null -ne $r.damping) { [double]$r.damping } elseif ($ref) { [double]$ref.damping } else { 0.20 }
+            stiffness              = if ($null -ne $r.stiffness) { [double]$r.stiffness } elseif ($ref) { [double]$ref.stiffness } else { 0.08 }
             world_damping_location = if ($null -ne $r.world_damping_location) { [double]$r.world_damping_location } elseif ($ref) { [double]$ref.world_damping_location } else { 0.65 }
             world_damping_rotation = if ($null -ne $r.world_damping_rotation) { [double]$r.world_damping_rotation } elseif ($ref) { [double]$ref.world_damping_rotation } else { 0.70 }
-            limit_angle = if ($null -ne $r.limit_angle) { [double]$r.limit_angle } elseif ($ref) { [double]$ref.limit_angle } else { 0.0 }
-            radius = if ($null -ne $r.radius) { [double]$r.radius } elseif ($ref) { [double]$ref.radius } else { 1.0 }
-            dummy_bone_length = if ($null -ne $r.dummy_bone_length) { [double]$r.dummy_bone_length } elseif ($ref) { [double]$ref.dummy_bone_length } else { 0.0 }
-            gravity_z = if ($null -ne $r.gravity_z) { [double]$r.gravity_z } elseif ($ref) { [double]$ref.gravity_z } else { -500.0 }
-            planar_constraint = if ($r.planar_constraint) { [string]$r.planar_constraint } elseif ($ref) { [string]$ref.planar_constraint } else { 'None' }
+            limit_angle            = if ($null -ne $r.limit_angle) { [double]$r.limit_angle } elseif ($ref) { [double]$ref.limit_angle } else { 0.0 }
+            radius                 = if ($null -ne $r.radius) { [double]$r.radius } elseif ($ref) { [double]$ref.radius } else { 1.0 }
+            dummy_bone_length      = if ($null -ne $r.dummy_bone_length) { [double]$r.dummy_bone_length } elseif ($ref) { [double]$ref.dummy_bone_length } else { 0.0 }
+            gravity_z              = if ($null -ne $r.gravity_z) { [double]$r.gravity_z } elseif ($ref) { [double]$ref.gravity_z } else { -500.0 }
+            planar_constraint      = if ($r.planar_constraint) { [string]$r.planar_constraint } elseif ($ref) { [string]$ref.planar_constraint } else { 'None' }
+            bone_forward_axis = if ($r.bone_forward_axis) { [string]$r.bone_forward_axis } elseif ($ref -and $ref.bone_forward_axis) { [string]$ref.bone_forward_axis } else { 'X_Positive' }
         }
         [void]$script:rules.Add($rule)
     }
@@ -224,6 +287,7 @@ function Serialize-RuleToLua($r) {
     $mItems = @($r.match | ForEach-Object { '"' + (Escape-LuaStr $_) + '"' })
     $mExpr = if ($mItems.Count -eq 1) { $mItems[0] } else { '{ ' + ($mItems -join ', ') + ' }' }
     $ci = [System.Globalization.CultureInfo]::InvariantCulture
+    $axVal = if ($r.bone_forward_axis) { [string]$r.bone_forward_axis } else { 'X_Positive' }
     $lines = @(
         '    {'
         ('        match = ' + $mExpr + ',')
@@ -236,6 +300,7 @@ function Serialize-RuleToLua($r) {
         ('        dummy_bone_length = ' + ([double]$r.dummy_bone_length).ToString('0.##', $ci) + ',')
         ('        gravity_z = ' + ([double]$r.gravity_z).ToString('0.#', $ci) + ',')
         ('        planar_constraint = "' + (Escape-LuaStr $r.planar_constraint) + '",')
+        ('        bone_forward_axis = "' + (Escape-LuaStr $axVal) + '",')
         '    },'
     )
     return ($lines -join "`r`n")
@@ -260,6 +325,39 @@ function Send-GameCommand($action, $rulesToSend) {
     Set-Status ("已发送请求 ({0})，等待游戏响应..." -f $action) $false
 }
 
+function Send-VisibilityCommand($overrideSlotIdx, $overrideSlotChecked, $overrideBoneIdx, $overrideBoneChecked) {
+    $hiddenSlots = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $script:materialSlots.Count; $i++) {
+        $checked = if ($overrideSlotIdx -eq $i) { $overrideSlotChecked } else { $chkSlots.GetItemChecked($i) }
+        if (-not $checked) {
+            [void]$hiddenSlots.Add([int]$script:materialSlots[$i].index)
+        }
+    }
+    $hiddenBones = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $script:accGroups.Count; $i++) {
+        $checked = if ($overrideBoneIdx -eq $i) { $overrideBoneChecked } else { $chkBones.GetItemChecked($i) }
+        if (-not $checked) {
+            foreach ($bn in $script:accGroups[$i].bones) {
+                [void]$hiddenBones.Add([string]$bn)
+            }
+        }
+    }
+    $script:seq++
+    $script:pendingAction = 'set_visibility'
+    $slotExpr = ($hiddenSlots | ForEach-Object { $_.ToString() }) -join ', '
+    $boneExpr = ($hiddenBones | ForEach-Object { '"' + (Escape-LuaStr $_) + '"' }) -join ', '
+    $lines = @(
+        'return {'
+        ('    seq = ' + $script:seq + ',')
+        '    action = "set_visibility",'
+        ('    hidden_slots = { ' + $slotExpr + ' },')
+        ('    hidden_bones = { ' + $boneExpr + ' },')
+        '}'
+    )
+    Write-Utf8Atomic $cmdPath ($lines -join "`r`n")
+    Set-Status '正在同步部件显隐到游戏...' $false
+}
+
 function Save-LivePhysicsLua() {
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine("-- Live KawaiiPhysics override (saved by F8 tuning panel)")
@@ -273,12 +371,12 @@ function Save-LivePhysicsLua() {
 }
 
 # ---------------- UI Construction ----------------
-$bgDark   = [System.Drawing.Color]::FromArgb(28, 30, 36)
-$bgPanel  = [System.Drawing.Color]::FromArgb(37, 40, 48)
-$bgInput  = [System.Drawing.Color]::FromArgb(48, 52, 62)
-$fgText   = [System.Drawing.Color]::FromArgb(236, 240, 246)
-$fgMuted  = [System.Drawing.Color]::FromArgb(165, 174, 190)
-$accent   = [System.Drawing.Color]::FromArgb(52, 132, 232)
+$bgDark = [System.Drawing.Color]::FromArgb(28, 30, 36)
+$bgPanel = [System.Drawing.Color]::FromArgb(37, 40, 48)
+$bgInput = [System.Drawing.Color]::FromArgb(48, 52, 62)
+$fgText = [System.Drawing.Color]::FromArgb(236, 240, 246)
+$fgMuted = [System.Drawing.Color]::FromArgb(165, 174, 190)
+$accent = [System.Drawing.Color]::FromArgb(52, 132, 232)
 $accentOk = [System.Drawing.Color]::FromArgb(46, 160, 96)
 
 $fontMain = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
@@ -286,7 +384,7 @@ $fontBold = New-Object System.Drawing.Font('Microsoft YaHei UI', 9, [System.Draw
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PBZ 实时物理调参面板 (F8)'
-$form.Size = New-Object System.Drawing.Size(820, 600)
+$form.Size = New-Object System.Drawing.Size(830, 620)
 $form.MinimumSize = New-Object System.Drawing.Size(780, 560)
 $form.StartPosition = 'CenterScreen'
 $form.TopMost = $true
@@ -294,34 +392,10 @@ $form.BackColor = $bgDark
 $form.ForeColor = $fgText
 $form.Font = $fontMain
 
-# Top Toolbar
-$topPanel = New-Object System.Windows.Forms.Panel
-$topPanel.Dock = 'Top'
-$topPanel.Height = 76
-$topPanel.BackColor = $bgPanel
-$topPanel.Padding = New-Object System.Windows.Forms.Padding(10, 6, 10, 6)
-$form.Controls.Add($topPanel)
-
-$lblHeader = New-Object System.Windows.Forms.Label
-$lblHeader.Location = New-Object System.Drawing.Point(12, 8)
-$lblHeader.Size = New-Object System.Drawing.Size(660, 22)
-$lblHeader.ForeColor = $fgMuted
-$lblHeader.Text = '正在读取物理状态...'
-$topPanel.Controls.Add($lblHeader)
-
-$chkTopMost = New-Object System.Windows.Forms.CheckBox
-$chkTopMost.Text = '窗口置顶'
-$chkTopMost.Checked = $true
-$chkTopMost.Location = New-Object System.Drawing.Point(700, 7)
-$chkTopMost.Size = New-Object System.Drawing.Size(95, 22)
-$chkTopMost.Anchor = 'Top,Right'
-$chkTopMost.Add_CheckedChanged({ $form.TopMost = $chkTopMost.Checked })
-$topPanel.Controls.Add($chkTopMost)
-
-function Make-Button($text, $x, $w, $bg) {
+function Make-Button($text, $x, $y, $w, $bg) {
     $b = New-Object System.Windows.Forms.Button
     $b.Text = $text
-    $b.Location = New-Object System.Drawing.Point($x, 36)
+    $b.Location = New-Object System.Drawing.Point($x, $y)
     $b.Size = New-Object System.Drawing.Size($w, 30)
     $b.FlatStyle = 'Flat'
     $b.FlatAppearance.BorderSize = 0
@@ -331,14 +405,28 @@ function Make-Button($text, $x, $w, $bg) {
     return $b
 }
 
-$btnLoadLive  = Make-Button '加载 live_physics' 12 135 $accent
-$btnRefresh   = Make-Button '读取当前参数'      155 115 $bgInput
-$btnSaveLive  = Make-Button '保存到 live_physics' 278 145 $bgInput
-$btnApplyOne  = Make-Button '仅应用当前项'      431 110 $bgInput
-$btnApplyAll  = Make-Button '应用全部到游戏'    549 140 $accentOk
-$btnApplyAll.Font = $fontBold
+# Top Header Bar
+$headerBar = New-Object System.Windows.Forms.Panel
+$headerBar.Dock = 'Top'
+$headerBar.Height = 36
+$headerBar.BackColor = $bgPanel
+$form.Controls.Add($headerBar)
 
-$topPanel.Controls.AddRange(@($btnLoadLive, $btnRefresh, $btnSaveLive, $btnApplyOne, $btnApplyAll))
+$lblHeader = New-Object System.Windows.Forms.Label
+$lblHeader.Location = New-Object System.Drawing.Point(12, 8)
+$lblHeader.Size = New-Object System.Drawing.Size(680, 22)
+$lblHeader.ForeColor = $fgMuted
+$lblHeader.Text = '正在读取角色状态...'
+$headerBar.Controls.Add($lblHeader)
+
+$chkTopMost = New-Object System.Windows.Forms.CheckBox
+$chkTopMost.Text = '窗口置顶'
+$chkTopMost.Checked = $true
+$chkTopMost.Location = New-Object System.Drawing.Point(710, 7)
+$chkTopMost.Size = New-Object System.Drawing.Size(95, 22)
+$chkTopMost.Anchor = 'Top,Right'
+$chkTopMost.Add_CheckedChanged({ $form.TopMost = $chkTopMost.Checked })
+$headerBar.Controls.Add($chkTopMost)
 
 # Status Bar
 $statusBar = New-Object System.Windows.Forms.Panel
@@ -361,16 +449,41 @@ function Set-Status($text, $isErr) {
     $lblStatus.ForeColor = if ($isErr) { [System.Drawing.Color]::FromArgb(245, 115, 115) } else { [System.Drawing.Color]::FromArgb(140, 225, 175) }
 }
 
-# Main Split Container
+# TabControl
+$tabs = New-Object System.Windows.Forms.TabControl
+$tabs.Dock = 'Fill'
+$form.Controls.Add($tabs)
+$tabs.BringToFront()
+
+# ==================== TAB 1: 物理参数 ====================
+$tabPhysics = New-Object System.Windows.Forms.TabPage
+$tabPhysics.Text = '  物理参数  '
+$tabPhysics.BackColor = $bgDark
+$tabPhysics.ForeColor = $fgText
+$tabs.TabPages.Add($tabPhysics)
+
+$physToolbar = New-Object System.Windows.Forms.Panel
+$physToolbar.Dock = 'Top'
+$physToolbar.Height = 44
+$physToolbar.BackColor = $bgPanel
+$tabPhysics.Controls.Add($physToolbar)
+
+$btnLoadLive = Make-Button '加载 live_physics' 10 7 135 $accent
+$btnRefresh  = Make-Button '读取当前参数'      153 7 115 $bgInput
+$btnSaveLive = Make-Button '保存到 live_physics' 276 7 145 $bgInput
+$btnApplyOne = Make-Button '仅应用当前项'      429 7 110 $bgInput
+$btnApplyAll = Make-Button '应用全部到游戏'    547 7 140 $accentOk
+$btnApplyAll.Font = $fontBold
+$physToolbar.Controls.AddRange(@($btnLoadLive, $btnRefresh, $btnSaveLive, $btnApplyOne, $btnApplyAll))
+
 $split = New-Object System.Windows.Forms.SplitContainer
 $split.Dock = 'Fill'
-$split.SplitterDistance = 265
+$split.SplitterDistance = 260
 $split.FixedPanel = 'Panel1'
 $split.BackColor = $bgDark
-$form.Controls.Add($split)
+$tabPhysics.Controls.Add($split)
 $split.BringToFront()
 
-# Left Pane: Rule List
 $lblLeftTitle = New-Object System.Windows.Forms.Label
 $lblLeftTitle.Text = '物理分组 / 规则列表'
 $lblLeftTitle.Dock = 'Top'
@@ -385,25 +498,11 @@ $leftBtnBar.Dock = 'Bottom'
 $leftBtnBar.Height = 36
 $split.Panel1.Controls.Add($leftBtnBar)
 
-$btnAddRule = New-Object System.Windows.Forms.Button
-$btnAddRule.Text = '+ 新增规则'
-$btnAddRule.Location = New-Object System.Drawing.Point(8, 4)
-$btnAddRule.Size = New-Object System.Drawing.Size(115, 26)
-$btnAddRule.FlatStyle = 'Flat'
-$btnAddRule.FlatAppearance.BorderSize = 0
-$btnAddRule.BackColor = $bgInput
-$btnAddRule.ForeColor = $fgText
-$leftBtnBar.Controls.Add($btnAddRule)
-
-$btnDelRule = New-Object System.Windows.Forms.Button
-$btnDelRule.Text = '- 删除选中'
-$btnDelRule.Location = New-Object System.Drawing.Point(131, 4)
-$btnDelRule.Size = New-Object System.Drawing.Size(115, 26)
-$btnDelRule.FlatStyle = 'Flat'
-$btnDelRule.FlatAppearance.BorderSize = 0
-$btnDelRule.BackColor = $bgInput
-$btnDelRule.ForeColor = $fgText
-$leftBtnBar.Controls.Add($btnDelRule)
+$btnAddRule = Make-Button '+ 新增规则' 8 4 115 $bgInput
+$btnAddRule.Height = 26
+$btnDelRule = Make-Button '- 删除选中' 131 4 115 $bgInput
+$btnDelRule.Height = 26
+$leftBtnBar.Controls.AddRange(@($btnAddRule, $btnDelRule))
 
 $lstRules = New-Object System.Windows.Forms.ListBox
 $lstRules.Dock = 'Fill'
@@ -415,7 +514,6 @@ $lstRules.IntegralHeight = $false
 $split.Panel1.Controls.Add($lstRules)
 $lstRules.BringToFront()
 
-# Right Pane: Parameter Editor
 $rightScroll = New-Object System.Windows.Forms.Panel
 $rightScroll.Dock = 'Fill'
 $rightScroll.AutoScroll = $true
@@ -444,20 +542,19 @@ $lblMatchedInfo.ForeColor = [System.Drawing.Color]::FromArgb(130, 195, 255)
 $lblMatchedInfo.Text = '匹配节点: 0'
 $rightScroll.Controls.Add($lblMatchedInfo)
 
-# Slider + NumericUpDown rows
 $paramSpecs = @(
-    @{ Key = 'damping';                Label = 'Damping (阻尼)';              Min = 0.0;     Max = 1.0;   Scale = 1000; Dec = 3; Inc = 0.01  },
-    @{ Key = 'stiffness';              Label = 'Stiffness (刚度)';            Min = 0.0;     Max = 1.0;   Scale = 1000; Dec = 3; Inc = 0.01  },
-    @{ Key = 'world_damping_location'; Label = 'WorldDampingLocation (位移)'; Min = 0.0;     Max = 1.0;   Scale = 100;  Dec = 2; Inc = 0.02  },
-    @{ Key = 'world_damping_rotation'; Label = 'WorldDampingRotation (旋转)'; Min = 0.0;     Max = 1.0;   Scale = 100;  Dec = 2; Inc = 0.02  },
-    @{ Key = 'limit_angle';            Label = 'LimitAngle (限角 °)';         Min = 0.0;     Max = 180.0; Scale = 10;   Dec = 1; Inc = 1.0   },
-    @{ Key = 'gravity_z';              Label = 'Gravity Z (重力 Z)';          Min = -3000.0; Max = 500.0; Scale = 1;    Dec = 0; Inc = 20.0  },
-    @{ Key = 'radius';                 Label = 'Radius (碰撞半径)';           Min = 0.0;     Max = 10.0;  Scale = 10;   Dec = 1; Inc = 0.2   },
-    @{ Key = 'dummy_bone_length';      Label = 'DummyBoneLength (假骨长)';    Min = 0.0;     Max = 20.0;  Scale = 10;   Dec = 1; Inc = 0.5   }
+    @{ Key = 'damping'; Label = 'Damping (阻尼)'; Min = 0.0; Max = 1.0; Scale = 1000; Dec = 3; Inc = 0.01 },
+    @{ Key = 'stiffness'; Label = 'Stiffness (刚度)'; Min = 0.0; Max = 1.0; Scale = 1000; Dec = 3; Inc = 0.01 },
+    @{ Key = 'world_damping_location'; Label = 'WorldDampingLocation (位移)'; Min = 0.0; Max = 1.0; Scale = 100; Dec = 2; Inc = 0.02 },
+    @{ Key = 'world_damping_rotation'; Label = 'WorldDampingRotation (旋转)'; Min = 0.0; Max = 1.0; Scale = 100; Dec = 2; Inc = 0.02 },
+    @{ Key = 'limit_angle'; Label = 'LimitAngle (限角 °)'; Min = 0.0; Max = 180.0; Scale = 10; Dec = 1; Inc = 1.0 },
+    @{ Key = 'gravity_z'; Label = 'Gravity Z (重力 Z)'; Min = -3000.0; Max = 500.0; Scale = 1; Dec = 0; Inc = 20.0 },
+    @{ Key = 'radius'; Label = 'Radius (碰撞半径)'; Min = 0.0; Max = 10.0; Scale = 10; Dec = 1; Inc = 0.2 },
+    @{ Key = 'dummy_bone_length'; Label = 'DummyBoneLength (假骨长)'; Min = 0.0; Max = 20.0; Scale = 10; Dec = 1; Inc = 0.5 }
 )
 
 $script:controlsByKey = @{}
-$y = 92
+$y = 90
 foreach ($sp in $paramSpecs) {
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = $sp.Label
@@ -491,34 +588,33 @@ foreach ($sp in $paramSpecs) {
     $kLocal = $sp.Key
     $sLocal = $sp.Scale
     $trk.Add_Scroll({
-        if ($script:suppressEvents) { return }
-        $idx = $lstRules.SelectedIndex
-        if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
-        $ctl = $script:controlsByKey[$kLocal]
-        $val = [double]$ctl.Track.Value / $sLocal
-        $script:suppressEvents = $true
-        $ctl.Num.Value = [decimal][math]::Max($ctl.Spec.Min, [math]::Min($ctl.Spec.Max, $val))
-        $script:suppressEvents = $false
-        $script:rules[$idx][$kLocal] = $val
-    }.GetNewClosure())
+            if ($script:suppressEvents) { return }
+            $idx = $lstRules.SelectedIndex
+            if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
+            $ctl = $script:controlsByKey[$kLocal]
+            $val = [double]$ctl.Track.Value / $sLocal
+            $script:suppressEvents = $true
+            $ctl.Num.Value = [decimal][math]::Max($ctl.Spec.Min, [math]::Min($ctl.Spec.Max, $val))
+            $script:suppressEvents = $false
+            $script:rules[$idx][$kLocal] = $val
+        }.GetNewClosure())
 
     $num.Add_ValueChanged({
-        if ($script:suppressEvents) { return }
-        $idx = $lstRules.SelectedIndex
-        if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
-        $ctl = $script:controlsByKey[$kLocal]
-        $val = [double]$ctl.Num.Value
-        $script:suppressEvents = $true
-        $tVal = [int][math]::Round($val * $sLocal)
-        $ctl.Track.Value = [math]::Max($ctl.Track.Minimum, [math]::Min($ctl.Track.Maximum, $tVal))
-        $script:suppressEvents = $false
-        $script:rules[$idx][$kLocal] = $val
-    }.GetNewClosure())
+            if ($script:suppressEvents) { return }
+            $idx = $lstRules.SelectedIndex
+            if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
+            $ctl = $script:controlsByKey[$kLocal]
+            $val = [double]$ctl.Num.Value
+            $script:suppressEvents = $true
+            $tVal = [int][math]::Round($val * $sLocal)
+            $ctl.Track.Value = [math]::Max($ctl.Track.Minimum, [math]::Min($ctl.Track.Maximum, $tVal))
+            $script:suppressEvents = $false
+            $script:rules[$idx][$kLocal] = $val
+        }.GetNewClosure())
 
-    $y += 38
+    $y += 37
 }
 
-# PlanarConstraint ComboBox
 $lblPlanar = New-Object System.Windows.Forms.Label
 $lblPlanar.Text = 'PlanarConstraint (平面约束)'
 $lblPlanar.Location = New-Object System.Drawing.Point(14, ($y + 4))
@@ -527,34 +623,129 @@ $rightScroll.Controls.Add($lblPlanar)
 
 $cmbPlanar = New-Object System.Windows.Forms.ComboBox
 $cmbPlanar.Location = New-Object System.Drawing.Point(202, ($y + 2))
-$cmbPlanar.Size = New-Object System.Drawing.Size(120, 24)
+$cmbPlanar.Size = New-Object System.Drawing.Size(80, 24)
 $cmbPlanar.DropDownStyle = 'DropDownList'
 $cmbPlanar.BackColor = $bgInput
 $cmbPlanar.ForeColor = $fgText
 [void]$cmbPlanar.Items.AddRange(@('None', 'X', 'Y', 'Z'))
 $rightScroll.Controls.Add($cmbPlanar)
 
+$lblFwdAxis = New-Object System.Windows.Forms.Label
+$lblFwdAxis.Text = 'BoneForwardAxis'
+$lblFwdAxis.Location = New-Object System.Drawing.Point(294, ($y + 4))
+$lblFwdAxis.Size = New-Object System.Drawing.Size(112, 22)
+$rightScroll.Controls.Add($lblFwdAxis)
+
+$cmbFwdAxis = New-Object System.Windows.Forms.ComboBox
+$cmbFwdAxis.Location = New-Object System.Drawing.Point(408, ($y + 2))
+$cmbFwdAxis.Size = New-Object System.Drawing.Size(96, 24)
+$cmbFwdAxis.DropDownStyle = 'DropDownList'
+$cmbFwdAxis.BackColor = $bgInput
+$cmbFwdAxis.ForeColor = $fgText
+[void]$cmbFwdAxis.Items.AddRange(@('X_Positive', 'X_Negative', 'Y_Positive', 'Y_Negative', 'Z_Positive', 'Z_Negative'))
+$rightScroll.Controls.Add($cmbFwdAxis)
+
+# ==================== TAB 2: 部件显隐 ====================
+$tabParts = New-Object System.Windows.Forms.TabPage
+$tabParts.Text = '  部件显隐（衣服/头饰）  '
+$tabParts.BackColor = $bgDark
+$tabParts.ForeColor = $fgText
+$tabs.TabPages.Add($tabParts)
+
+$partsToolbar = New-Object System.Windows.Forms.Panel
+$partsToolbar.Dock = 'Top'
+$partsToolbar.Height = 44
+$partsToolbar.BackColor = $bgPanel
+$tabParts.Controls.Add($partsToolbar)
+
+$btnApplyParts  = Make-Button '应用显隐'     10 7 110 $accentOk
+$btnApplyParts.Font = $fontBold
+$btnShowAll     = Make-Button '全部显示'     128 7 105 $accent
+$btnRefreshPart = Make-Button '读取当前部件' 241 7 120 $bgInput
+
+$chkInstantVis = New-Object System.Windows.Forms.CheckBox
+$chkInstantVis.Text = '勾选即生效'
+$chkInstantVis.Checked = $true
+$chkInstantVis.Location = New-Object System.Drawing.Point(380, 11)
+$chkInstantVis.Size = New-Object System.Drawing.Size(120, 22)
+$chkInstantVis.ForeColor = $fgText
+
+$partsToolbar.Controls.AddRange(@($btnApplyParts, $btnShowAll, $btnRefreshPart, $chkInstantVis))
+
+$partsSplit = New-Object System.Windows.Forms.SplitContainer
+$partsSplit.Dock = 'Fill'
+$partsSplit.SplitterDistance = 380
+$partsSplit.BackColor = $bgDark
+$tabParts.Controls.Add($partsSplit)
+$partsSplit.BringToFront()
+
+$lblSlotsTitle = New-Object System.Windows.Forms.Label
+$lblSlotsTitle.Text = '材质槽显隐（勾选=显示，取消=隐藏；按模型材质分区）'
+$lblSlotsTitle.Dock = 'Top'
+$lblSlotsTitle.Height = 28
+$lblSlotsTitle.TextAlign = 'MiddleLeft'
+$lblSlotsTitle.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+$lblSlotsTitle.ForeColor = $fgMuted
+$partsSplit.Panel1.Controls.Add($lblSlotsTitle)
+
+$chkSlots = New-Object System.Windows.Forms.CheckedListBox
+$chkSlots.Dock = 'Fill'
+$chkSlots.CheckOnClick = $true
+$chkSlots.BackColor = $bgPanel
+$chkSlots.ForeColor = $fgText
+$chkSlots.BorderStyle = 'None'
+$chkSlots.IntegralHeight = $false
+$partsSplit.Panel1.Controls.Add($chkSlots)
+$chkSlots.BringToFront()
+
+$lblBonesTitle = New-Object System.Windows.Forms.Label
+$lblBonesTitle.Text = '装饰骨骼显隐（勾选=显示，取消=隐藏；头巾/袖子/裙摆/饰品）'
+$lblBonesTitle.Dock = 'Top'
+$lblBonesTitle.Height = 28
+$lblBonesTitle.TextAlign = 'MiddleLeft'
+$lblBonesTitle.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+$lblBonesTitle.ForeColor = $fgMuted
+$partsSplit.Panel2.Controls.Add($lblBonesTitle)
+
+$chkBones = New-Object System.Windows.Forms.CheckedListBox
+$chkBones.Dock = 'Fill'
+$chkBones.CheckOnClick = $true
+$chkBones.BackColor = $bgPanel
+$chkBones.ForeColor = $fgText
+$chkBones.BorderStyle = 'None'
+$chkBones.IntegralHeight = $false
+$partsSplit.Panel2.Controls.Add($chkBones)
+$chkBones.BringToFront()
+
+# ---------------- Events ----------------
 $cmbPlanar.Add_SelectedIndexChanged({
+        if ($script:suppressEvents) { return }
+        $idx = $lstRules.SelectedIndex
+        if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
+        $script:rules[$idx].planar_constraint = [string]$cmbPlanar.SelectedItem
+    })
+
+$cmbFwdAxis.Add_SelectedIndexChanged({
     if ($script:suppressEvents) { return }
     $idx = $lstRules.SelectedIndex
     if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
-    $script:rules[$idx].planar_constraint = [string]$cmbPlanar.SelectedItem
+    $script:rules[$idx].bone_forward_axis = [string]$cmbFwdAxis.SelectedItem
 })
 
 $txtMatch.Add_TextChanged({
-    if ($script:suppressEvents) { return }
-    $idx = $lstRules.SelectedIndex
-    if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
-    $parts = @($txtMatch.Text -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-    if ($parts.Count -eq 0) { $parts = @('*') }
-    $script:rules[$idx].match = $parts
-    $script:rules[$idx].label = Guess-PartLabel $parts
-    $cnt = Count-MatchedNodes $parts
-    $lblMatchedInfo.Text = ("当前规则匹配节点数: {0}" -f $cnt)
-    $script:suppressEvents = $true
-    $lstRules.Items[$idx] = Format-RuleTitle $script:rules[$idx]
-    $script:suppressEvents = $false
-})
+        if ($script:suppressEvents) { return }
+        $idx = $lstRules.SelectedIndex
+        if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
+        $parts = @($txtMatch.Text -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        if ($parts.Count -eq 0) { $parts = @('*') }
+        $script:rules[$idx].match = $parts
+        $script:rules[$idx].label = Guess-PartLabel $parts
+        $cnt = Count-MatchedNodes $parts
+        $lblMatchedInfo.Text = ("当前规则匹配节点数: {0}" -f $cnt)
+        $script:suppressEvents = $true
+        $lstRules.Items[$idx] = Format-RuleTitle $script:rules[$idx]
+        $script:suppressEvents = $false
+    })
 
 function Load-RuleIntoEditor($idx) {
     if ($idx -lt 0 -or $idx -ge $script:rules.Count) { return }
@@ -574,6 +765,9 @@ function Load-RuleIntoEditor($idx) {
     $p = if ($r.planar_constraint) { [string]$r.planar_constraint } else { 'None' }
     $pIdx = $cmbPlanar.Items.IndexOf($p)
     $cmbPlanar.SelectedIndex = if ($pIdx -ge 0) { $pIdx } else { 0 }
+    $ax = if ($r.bone_forward_axis) { [string]$r.bone_forward_axis } else { 'X_Positive' }
+    $aIdx = $cmbFwdAxis.Items.IndexOf($ax)
+    $cmbFwdAxis.SelectedIndex = if ($aIdx -ge 0) { $aIdx } else { 0 }
     $script:suppressEvents = $false
 }
 
@@ -592,63 +786,79 @@ function Refresh-RuleList($selectIdx) {
 }
 
 $lstRules.Add_SelectedIndexChanged({
-    if ($script:suppressEvents) { return }
-    Load-RuleIntoEditor $lstRules.SelectedIndex
-})
+        if ($script:suppressEvents) { return }
+        Load-RuleIntoEditor $lstRules.SelectedIndex
+    })
 
 $btnAddRule.Add_Click({
     $newRule = [ordered]@{
         label = '新规则'
         match = @('Bip001-Spine1')
         damping = 0.05
-        stiffness = 0.06
-        world_damping_location = 0.18
-        world_damping_rotation = 0.40
-        limit_angle = 20.0
+        stiffness = 0.12
+        world_damping_location = 0.50
+        world_damping_rotation = 0.45
+        limit_angle = 12.0
         radius = 1.0
-        dummy_bone_length = 5.5
-        gravity_z = -250.0
+        dummy_bone_length = 6.0
+        gravity_z = -280.0
         planar_constraint = 'None'
+        bone_forward_axis = 'Y_Positive'
     }
     $idx = $script:rules.Add($newRule)
     Refresh-RuleList $idx
 })
 
 $btnDelRule.Add_Click({
-    $idx = $lstRules.SelectedIndex
-    if ($idx -ge 0 -and $idx -lt $script:rules.Count) {
-        $script:rules.RemoveAt($idx)
-        Refresh-RuleList ([math]::Max(0, $idx - 1))
-    }
-})
+        $idx = $lstRules.SelectedIndex
+        if ($idx -ge 0 -and $idx -lt $script:rules.Count) {
+            $script:rules.RemoveAt($idx)
+            Refresh-RuleList ([math]::Max(0, $idx - 1))
+        }
+    })
 
-$btnRefresh.Add_Click({
-    Send-GameCommand 'refresh' @()
-})
-
-$btnLoadLive.Add_Click({
-    Send-GameCommand 'load_file' @()
-})
-
-$btnSaveLive.Add_Click({
-    Save-LivePhysicsLua
-})
+$btnRefresh.Add_Click({ Send-GameCommand 'refresh' @() })
+$btnRefreshPart.Add_Click({ Send-GameCommand 'refresh' @() })
+$btnLoadLive.Add_Click({ Send-GameCommand 'load_file' @() })
+$btnSaveLive.Add_Click({ Save-LivePhysicsLua })
 
 $btnApplyOne.Add_Click({
-    $idx = $lstRules.SelectedIndex
-    if ($idx -lt 0 -or $idx -ge $script:rules.Count) {
-        Set-Status '请先在左侧选择一条规则' $true
-        return
-    }
-    Send-GameCommand 'apply' @($script:rules[$idx])
-})
+        $idx = $lstRules.SelectedIndex
+        if ($idx -lt 0 -or $idx -ge $script:rules.Count) {
+            Set-Status '请先在左侧选择一条规则' $true
+            return
+        }
+        Send-GameCommand 'apply' @($script:rules[$idx])
+    })
 
 $btnApplyAll.Add_Click({
-    if ($script:rules.Count -eq 0) {
-        Set-Status '当前没有可应用的规则' $true
-        return
-    }
-    Send-GameCommand 'apply' @($script:rules)
+        if ($script:rules.Count -eq 0) {
+            Set-Status '当前没有可应用的规则' $true
+            return
+        }
+        Send-GameCommand 'apply' @($script:rules)
+    })
+
+$btnApplyParts.Add_Click({
+    Send-VisibilityCommand -1 $false -1 $false
+})
+
+$btnShowAll.Add_Click({
+    Send-GameCommand 'show_all_parts' @()
+})
+
+$chkSlots.Add_ItemCheck({
+    param($s, $e)
+    if ($script:suppressEvents -or -not $chkInstantVis.Checked) { return }
+    $isChecked = ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked)
+    Send-VisibilityCommand $e.Index $isChecked -1 $false
+})
+
+$chkBones.Add_ItemCheck({
+    param($s, $e)
+    if ($script:suppressEvents -or -not $chkInstantVis.Checked) { return }
+    $isChecked = ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked)
+    Send-VisibilityCommand -1 $false $e.Index $isChecked
 })
 
 # Poll ack file from game thread
@@ -667,7 +877,7 @@ $timer.Add_Tick({
     } elseif ($act -eq 'load_file') {
         Load-StateFromDisk $false | Out-Null
         Load-LiveFileFromDisk | Out-Null
-    } elseif ($act -eq 'apply') {
+    } elseif ($act -eq 'apply' -or $act -eq 'set_visibility' -or $act -eq 'show_all_parts') {
         Load-StateFromDisk $false | Out-Null
         Set-Status ([string]$ack.message) (-not [bool]$ack.ok)
     }
@@ -677,16 +887,16 @@ $timer.Start()
 $form.Add_Shown({
     $ok = Load-StateFromDisk $true
     if ($ok) {
-        Set-Status '已自动读取当前角色实时物理参数；点击「加载 live_physics」可载入预设' $false
+        Set-Status '已读取当前角色物理参数与部件列表；切换页签可控制衣服/饰品显隐' $false
     } else {
         Set-Status '未检测到实时状态，可点击「读取当前参数」或确认已进入游戏画面' $true
     }
 })
 
 $form.Add_FormClosed({
-    $timer.Stop()
-    try { $mutex.ReleaseMutex() } catch {}
-    $mutex.Dispose()
-})
+        $timer.Stop()
+        try { $mutex.ReleaseMutex() } catch {}
+        $mutex.Dispose()
+    })
 
 [System.Windows.Forms.Application]::Run($form)

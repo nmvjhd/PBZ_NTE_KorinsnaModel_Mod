@@ -826,6 +826,9 @@ return function(ctx)
         if type(rule.planar_constraint) == "string" and rule.planar_constraint ~= "" then
             parts[#parts + 1] = "PlanarConstraint=" .. rule.planar_constraint
         end
+        if type(rule.bone_forward_axis) == "string" and rule.bone_forward_axis ~= "" then
+            parts[#parts + 1] = "BoneForwardAxis=" .. rule.bone_forward_axis
+        end
         if type(rule.dummy_bone_length) == "number" then
             parts[#parts + 1] = string.format("DummyBoneLength=%.4f", rule.dummy_bone_length)
         end
@@ -891,6 +894,24 @@ return function(ctx)
         return "None"
     end
 
+    local function axis_to_name(val)
+        local names = {
+            [0] = "X_Positive", [1] = "X_Negative",
+            [2] = "Y_Positive", [3] = "Y_Negative",
+            [4] = "Z_Positive", [5] = "Z_Negative",
+        }
+        if val == nil then return "X_Positive" end
+        if type(val) == "number" then
+            return names[math.floor(val)] or "X_Positive"
+        end
+        local s = tostring(val)
+        local tail = s:match("([^:]+)$") or s
+        for i = 0, 5 do
+            if tail == names[i] or tail == tostring(i) then return names[i] end
+        end
+        return "X_Positive"
+    end
+
     local function write_text_atomic(path, content)
         local tmp = path .. ".tmp"
         local f = io.open(tmp, "wb")
@@ -907,9 +928,171 @@ return function(ctx)
         return true
     end
 
+    local function emit_live_log(dir, msg)
+        log(msg, 1)
+        local lf = io.open(tostring(dir or ".") .. "\\KorinsnaRetarget.log", "a")
+        if lf then
+            lf:write(string.format("[%s] %s\n", tostring(os.date("%H:%M:%S")), tostring(msg)))
+            lf:close()
+        end
+    end
+
+    local vis_state = { carrier = nil, hidden_slots = {}, hidden_bones = {} }
+
+    local function reset_vis_if_carrier_changed(carrier_name)
+        if vis_state.carrier ~= carrier_name then
+            vis_state.carrier = carrier_name
+            vis_state.hidden_slots = {}
+            vis_state.hidden_bones = {}
+        end
+    end
+
+    local function is_core_bone_name(name)
+        if type(name) ~= "string" or name == "" then return true end
+        local lo = name:lower()
+        if lo == "root" or lo == "none" then return true end
+        if lo:sub(1, 6) == "bip001" then return true end
+        if lo:sub(1, 5) == "bone-" then return true end
+        if lo:find("head_bone", 1, true) then return true end
+        if lo:find("breast", 1, true) then return true end
+        return false
+    end
+
+    local function collect_parts_info(body, nodes)
+        local slots = {}
+        local acc_bones = {}
+        if not valid(body) then return slots, acc_bones end
+
+        -- 1. Material slots
+        local slot_names = {}
+        local mesh = mesh_of(body)
+        if usable(mesh) then
+            local idx = 0
+            pcall(function()
+                mesh.Materials:ForEach(function(_, element)
+                    local sname = nil
+                    pcall(function() sname = element:get().MaterialSlotName:ToString() end)
+                    if type(sname) == "string" and sname ~= "" and sname ~= "None" then
+                        slot_names[idx] = sname
+                    end
+                    idx = idx + 1
+                end)
+            end)
+        end
+        local mat_count = tonumber(soft(function() return body:GetNumMaterials() end)) or 0
+        for i = 0, mat_count - 1 do
+            local mat = soft(function() return body:GetMaterial(i) end)
+            local fallback = usable(mat) and object_name(mat) or ("Slot_" .. tostring(i))
+            slots[#slots + 1] = {
+                index = i,
+                name = slot_names[i] or fallback,
+                visible = not (vis_state.hidden_slots[i] == true),
+            }
+        end
+
+        -- 2. Accessory root bones from KawaiiPhysics nodes (excluding core skeleton)
+        local seen_bone = {}
+        if type(nodes) == "table" then
+            for _, node in ipairs(nodes) do
+                local rb = node.root_bone
+                if type(rb) == "string" and rb ~= "" and not is_core_bone_name(rb) and not seen_bone[rb] then
+                    seen_bone[rb] = true
+                    acc_bones[#acc_bones + 1] = {
+                        bone = rb,
+                        bones = node.bones or 1,
+                        visible = not (vis_state.hidden_bones[rb] == true),
+                    }
+                end
+            end
+        end
+        table.sort(acc_bones, function(a, b) return a.bone < b.bone end)
+        return slots, acc_bones
+    end
+
+    local function apply_parts_visibility(hidden_slots_list, hidden_bones_list, dir)
+        local body = state.body or state.carrier
+        if not valid(body) then
+            return false, "当前角色无有效网格组件"
+        end
+        local carrier_name = config.carrier_mesh_name or part_mesh_name(body) or "Unknown"
+        reset_vis_if_carrier_changed(tostring(carrier_name))
+
+        local want_hide_slot = {}
+        if type(hidden_slots_list) == "table" then
+            for _, s in ipairs(hidden_slots_list) do
+                local idx = tonumber(s)
+                if idx ~= nil then want_hide_slot[math.floor(idx)] = true end
+            end
+        end
+        local mat_count = tonumber(soft(function() return body:GetNumMaterials() end)) or 0
+        local slot_hidden_cnt = 0
+        for i = 0, mat_count - 1 do
+            local hide = want_hide_slot[i] == true
+            local show = not hide
+            if hide then slot_hidden_cnt = slot_hidden_cnt + 1 end
+            vis_state.hidden_slots[i] = hide and true or nil
+            for lod = 0, 2 do
+                pcall(function() body:ShowMaterialSection(i, i, show, lod) end)
+            end
+        end
+
+        local want_hide_bone = {}
+        if type(hidden_bones_list) == "table" then
+            for _, b in ipairs(hidden_bones_list) do
+                if type(b) == "string" and b ~= "" and not is_core_bone_name(b) then
+                    want_hide_bone[b] = true
+                end
+            end
+        end
+        -- Unhide bones that were previously hidden and are now wanted visible
+        for b, _ in pairs(vis_state.hidden_bones) do
+            if not want_hide_bone[b] then
+                pcall(function() body:UnHideBoneByName(FName(b)) end)
+                vis_state.hidden_bones[b] = nil
+            end
+        end
+        -- Hide newly requested bones
+        local bone_hidden_cnt = 0
+        for b, _ in pairs(want_hide_bone) do
+            bone_hidden_cnt = bone_hidden_cnt + 1
+            pcall(function() body:HideBoneByName(FName(b), 0) end)
+            vis_state.hidden_bones[b] = true
+        end
+
+        local msg = string.format("已更新部件显隐: 隐藏材质槽 %d/%d，隐藏装饰骨骼 %d 根",
+            slot_hidden_cnt, mat_count, bone_hidden_cnt)
+        emit_live_log(dir, "live_parts: " .. msg)
+        return true, msg
+    end
+
+    local function show_all_parts(dir)
+        local body = state.body or state.carrier
+        if not valid(body) then
+            return false, "当前角色无有效网格组件"
+        end
+        for lod = 0, 2 do
+            pcall(function() body:ShowAllMaterialSections(lod) end)
+        end
+        local mat_count = tonumber(soft(function() return body:GetNumMaterials() end)) or 0
+        for i = 0, mat_count - 1 do
+            for lod = 0, 2 do
+                pcall(function() body:ShowMaterialSection(i, i, true, lod) end)
+            end
+        end
+        for b, _ in pairs(vis_state.hidden_bones) do
+            pcall(function() body:UnHideBoneByName(FName(b)) end)
+        end
+        vis_state.hidden_slots = {}
+        vis_state.hidden_bones = {}
+        local msg = "已恢复全部材质槽与装饰骨骼显示"
+        emit_live_log(dir, "live_parts: " .. msg)
+        return true, msg
+    end
+
     local function collect_live_physics_snapshot(dir)
         local body = state.body or state.carrier
         local carrier_name = config.carrier_mesh_name or (valid(body) and part_mesh_name(body)) or "Unknown"
+        reset_vis_if_carrier_changed(tostring(carrier_name))
         local instance = valid(body) and soft(function() return body:GetPostProcessInstance() end) or nil
         local result = {
             ts = tostring(os.date("%H:%M:%S")),
@@ -917,6 +1100,8 @@ return function(ctx)
             ready = false,
             error = "",
             nodes = {},
+            material_slots = {},
+            accessory_bones = {},
         }
         if not usable(instance) then
             result.error = "当前角色尚无物理实例（请先进入游戏画面）"
@@ -932,6 +1117,7 @@ return function(ctx)
                 local st = nv and soft(function() return nv.PhysicsSettings end)
                 local gv = nv and soft(function() return nv.Gravity end)
                 local planar = nv and soft(function() return nv.PlanarConstraint end)
+                local fwd_axis = nv and soft(function() return nv.BoneForwardAxis end)
                 local dummy = nv and tonumber(soft(function() return nv.DummyBoneLength end)) or 0.0
                 result.nodes[#result.nodes + 1] = {
                     node_name = node.name,
@@ -946,9 +1132,11 @@ return function(ctx)
                     dummy_bone_length = dummy,
                     gravity_z = gv and tonumber(soft(function() return gv.Z end)) or 0.0,
                     planar_constraint = planar_to_name(planar),
+                    bone_forward_axis = axis_to_name(fwd_axis),
                 }
             end
         end
+        result.material_slots, result.accessory_bones = collect_parts_info(body, result.nodes)
         local state_path = tostring(dir or ".") .. "\\.live_physics_state.json"
         write_text_atomic(state_path, panel_json_encode(result))
         return result
@@ -996,20 +1184,12 @@ return function(ctx)
                     dummy_bone_length = tonumber(r.dummy_bone_length),
                     gravity_z = tonumber(gz),
                     planar_constraint = r.planar_constraint and planar_to_name(r.planar_constraint) or nil,
+                    bone_forward_axis = r.bone_forward_axis and axis_to_name(r.bone_forward_axis) or nil,
                 }
             end
         end
         write_text_atomic(out_path, panel_json_encode({ exists = true, error = "", rules = normalized }))
         return true, string.format("已加载 live_physics.lua（%d 条规则）", #normalized)
-    end
-
-    local function emit_live_log(dir, msg)
-        log(msg, 1)
-        local lf = io.open(tostring(dir or ".") .. "\\KorinsnaRetarget.log", "a")
-        if lf then
-            lf:write(string.format("[%s] %s\n", tostring(os.date("%H:%M:%S")), tostring(msg)))
-            lf:close()
-        end
     end
 
     local function apply_live_rules(rules, dir, source_label)
@@ -1172,6 +1352,22 @@ return function(ctx)
             write_text_atomic(ack_path, panel_json_encode({
                 seq = seq, ok = ok_a, action = action,
                 message = msg_a, matched = matched, updated = updated, total = total,
+                ts = tostring(os.date("%H:%M:%S")),
+            }))
+        elseif action == "set_visibility" then
+            local ok_v, msg_v = apply_parts_visibility(cmd.hidden_slots, cmd.hidden_bones, root)
+            collect_live_physics_snapshot(root)
+            write_text_atomic(ack_path, panel_json_encode({
+                seq = seq, ok = ok_v, action = action,
+                message = msg_v,
+                ts = tostring(os.date("%H:%M:%S")),
+            }))
+        elseif action == "show_all_parts" then
+            local ok_s, msg_s = show_all_parts(root)
+            collect_live_physics_snapshot(root)
+            write_text_atomic(ack_path, panel_json_encode({
+                seq = seq, ok = ok_s, action = action,
+                message = msg_s,
                 ts = tostring(os.date("%H:%M:%S")),
             }))
         end
