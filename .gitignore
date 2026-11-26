@@ -44,15 +44,11 @@ ue/*/*.sln
 ue/*/.vs/
 
 # ---------------------------------------------------------------- 研发 dump
-# 只保留体积小的文本 / JSON 参考数据；日志与大 dump 不进仓库
+# 构建日志与自动生成报告不进仓库，仅保留骨骼参考表 refbones.txt
 extract/*
-!extract/*.txt
-!extract/*.json
-!extract/dump
-extract/last-run-tail.txt
-extract/apose-dump.json
-extract/npc036-dump.json
-extract/ue-refpose-user.txt
+!extract/dump/
+extract/dump/*
+!extract/dump/refbones.txt
 
 # ---------------------------------------------------------------- release
 Release/
