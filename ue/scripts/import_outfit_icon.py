@@ -7,13 +7,18 @@ Settings follow the game's own T_Icon_Appearance_*: 256x256, BC7, UI group, no m
 Without PBZ_OUTFIT_ICON the stage only removes an icon an earlier build left in the shared project.
 """
 import os
+import sys
 
 import unreal
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
+
 EAL = unreal.EditorAssetLibrary
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 RESULT = os.path.join(ROOT, "extract", "ue-outfit-icon-result.txt")
-ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+ASSET_ROOT = CTX["asset_root"]
 FOLDER = ASSET_ROOT + "/Outfit"
 
 lines = []
@@ -24,8 +29,8 @@ def log(msg):
 
 
 def main():
-    source = os.environ.get("PBZ_OUTFIT_ICON")
-    target = os.environ.get("PBZ_OUTFIT_ICON_PATH")
+    source = CTX["outfit_icon"]
+    target = CTX["outfit_icon_path"]
     # icons of other characters left in the shared project would ship with this one
     if EAL.does_directory_exist(FOLDER):
         for path in EAL.list_assets(FOLDER, recursive=False, include_folder=False):

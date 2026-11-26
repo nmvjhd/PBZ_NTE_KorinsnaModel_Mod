@@ -9,15 +9,20 @@ Writes:
 """
 import json
 import os
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_APose.fbx").replace("\\", "/")
-DEST = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+DEST = CTX["asset_root"]
 NAME = "SK_Korinsna"
 RESULT = os.path.join(ROOT, "extract", "ue-skimport-result.txt")
 POSE_OUT = os.path.join(ROOT, "extract", "ue-sk-korinsna-refpose.json")

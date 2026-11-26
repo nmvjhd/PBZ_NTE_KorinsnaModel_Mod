@@ -13,16 +13,21 @@ Run order (see tools/build_all.ps1):
 """
 import os
 import re
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 RESULT = os.path.join(ROOT, "extract", "ue-retarget-result.txt")
 
-DEST = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+DEST = CTX["asset_root"]
 TARGET_SKEL = DEST + "/SK_Korinsna_Skeleton"
 TARGET_MESH = DEST + "/SK_Korinsna"
 SOURCE_MESH = "/Game/Korinsna/Source/HunSkin"
@@ -48,7 +53,7 @@ CONFIG_PATH = os.path.join(ROOT, "ue", "retarget_config.json")
 #   * PBZ_PHYSICS_CONFIG (set by the character builder from build.json "physics") points at a character's
 #     own file instead: chain roots and collider bones are per-skeleton, so one shared file cannot serve
 #     every character. Unset = the shared file above.
-PHYSICS_CONFIG = os.environ.get("PBZ_PHYSICS_CONFIG") or os.path.join(ROOT, "ue", "kawaii_config.json")
+PHYSICS_CONFIG = CTX["physics_config"] or os.path.join(ROOT, "ue", "kawaii_config.json")
 
 
 def load_config():
@@ -337,7 +342,7 @@ def main():
         log("aligned %d chain(s), retarget pose saved" % aligned)
         EAL.save_loaded_asset(rig_target, False)
 
-    capture_path = os.environ.get("PBZ_GAME_REFERENCE_CAPTURE") or config.get("game_reference_capture")
+    capture_path = CTX["game_reference_capture"] or config.get("game_reference_capture")
     if capture_path:
         import sys
         workspace_root = os.path.abspath(os.path.join(ROOT, "..", ".."))

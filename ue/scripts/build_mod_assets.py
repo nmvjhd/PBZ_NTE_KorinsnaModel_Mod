@@ -13,14 +13,19 @@ one full VT tile).
 import os
 import time
 
+import sys
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 STARTED_AT = time.time()
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-_REF_ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+_REF_ROOT = CTX["ref_root"]
 TEX_DIR = os.path.join(_REF_ROOT, "KorinsnaModel", "textures").replace("\\", "/")
 
 HOST_MI_DIR = "/Game/PBZContent/Characters/Hero/Hun_New_V2b/Material"
@@ -122,12 +127,11 @@ TEXTURES = [
 #   "match_slots_by_name": assign mesh sections by the NN in "<Prefix>_NN_<name>" instead of import order.
 # Unset = the layout above.
 import json as _json
-import os as _layout_os
 
 SLOT_TEXTURE_BASE = {}
 OWN_SPEC = {}          # slot -> {"textures": {...}, "replaces": prefix or None} for own-material slot objects
 MATCH_SLOTS_BY_NAME = False
-LAYOUT_PATH = _layout_os.environ.get("PBZ_MATERIAL_LAYOUT")
+LAYOUT_PATH = CTX["material_layout"]
 if LAYOUT_PATH:
     with open(LAYOUT_PATH, encoding="utf-8") as _handle:
         _layout = _json.load(_handle)
@@ -214,13 +218,10 @@ open(RESULT, "w").close()
 #     real instance and only inherits its shader and scalar settings.
 # The hero's own textures for such a slot are NOT overwritten, which is the point: nothing of the original
 # outfit changes. Unset = the previous behaviour for every slot.
-import os as _os
-
-ASSET_ROOT = _os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+ASSET_ROOT = CTX["asset_root"]
 MEL = unreal.MaterialEditingLibrary
 OWN_DIR = ASSET_ROOT + "/Own"
-OWN_SLOTS = sorted({int(v) for v in _os.environ.get("PBZ_OWN_MATERIAL_SLOTS", "").replace(" ", "").split(",") if v}
-                   | set(OWN_SPEC))
+OWN_SLOTS = sorted(set(CTX["own_material_slots"]) | set(OWN_SPEC))
 missing_base = [slot for slot in OWN_SLOTS if slot not in SLOT_TEXTURE_BASE and slot not in OWN_SPEC]
 if missing_base:
     raise SystemExit("own material slots %s have no slot_texture_base in the material layout" % missing_base)
@@ -465,7 +466,7 @@ else:
 # PBZ_ARM_VARIANTS=1 ships a few flat Mix maps with different channel layouts and an extra, unused material
 # slot whose instance only exists to keep them loaded. A UE4SS script can then swap them in at run time to
 # find out which layout the game's material really reads. Diagnostic only.
-if _os.environ.get("PBZ_ARM_VARIANTS") and OWN_SLOTS:
+if CTX["arm_variants"] and OWN_SLOTS:
     import struct as _struct
 
     VARIANTS = (("V0_M_R_AO", (0, 153, 255)), ("V1_R_M_AO", (153, 0, 255)), ("V2_AO_R_M", (255, 153, 0)))
@@ -524,7 +525,7 @@ for i, m in enumerate(check):
 # slot list. A slot change here only reaches the game after that copy is rebuilt, and forgetting it is
 # invisible in every log (the cook happily ships the old carrier) - it cost a whole debugging round once:
 # the corrected eye material was in SK_Korinsna, the game kept rendering `MI_ZeroHun_Eye_01`.
-carrier_package = os.environ.get("PBZ_CARRIER_PATH") or "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
+carrier_package = CTX["carrier_path"]
 carrier_root, carrier_rest = carrier_package.strip("/").split("/", 1)
 carrier = os.path.join(unreal.Paths.project_dir(),
                        *(["Content"] if carrier_root == "Game" else ["Plugins", carrier_root, "Content"]),

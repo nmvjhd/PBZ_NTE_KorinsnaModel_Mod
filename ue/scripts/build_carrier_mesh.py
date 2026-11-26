@@ -19,29 +19,29 @@ How the retarget AnimBlueprint reaches the game
 """
 import json
 import os
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import DEFAULT_CARRIER_PATH as DEFAULT_CARRIER, load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_APose.fbx").replace("\\", "/")
 RESULT = os.path.join(ROOT, "extract", "ue-carrier-result.txt")
 
-DEFAULT_CARRIER = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Hun_Head_New"
-# PBZ_CARRIER_PATH: ship the mesh as a different game part, e.g. the hair band only one outfit uses
-# (/HuaShira/Characters/Hero/Hero_Hun_FengXueDaoke/Cloth/Hun_FengXueDaoKe_Hair_Band). The shared head part
-# is then left alone, and a carrier an earlier build put there is deleted so it is not shipped again.
-# A path of our own (e.g. /Game/Korinsna/Outfit/SK_PBZ_Yae_Band) is not a game part at all: the outfit
-# container (outfit_table.py) adds a wardrobe outfit whose MeshBand row points at it.
-CARRIER = os.environ.get("PBZ_CARRIER_PATH") or DEFAULT_CARRIER
+# carrier_path: ship the mesh as a different game part or a path of our own (e.g. /Game/Korinsna/Outfit/SK_PBZ_Yae_Band).
+CARRIER = CTX["carrier_path"]
 # every carrier path a build has used; the ones that are not this build's are deleted before importing
 LEGACY_CARRIERS = (
     DEFAULT_CARRIER,
     "/HuaShira/Characters/Hero/Hero_Hun_FengXueDaoke/Cloth/Hun_FengXueDaoKe_Hair_Band",
 )
-ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+ASSET_ROOT = CTX["asset_root"]
 DEST, NAME = CARRIER.rsplit("/", 1)
 SKELETON = ASSET_ROOT + "/SK_Korinsna_Skeleton"
 ANIM_BP = ASSET_ROOT + "/ABP_Korinsna_Retarget"

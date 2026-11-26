@@ -19,13 +19,18 @@ Why the skeleton is only referenced, never shipped
 Weapons are deliberately not blanked.
 """
 import os
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 BLANK_FBX = os.path.join(ROOT, "blender", "out", "BlankPart.fbx").replace("\\", "/")
 # the body needs its own blank mesh: one built from the game's own bone hierarchy, so its bone list
 # matches the real body exactly (see the note on BLANKED)
@@ -191,7 +196,7 @@ def main():
     # PBZ_BLANK_HEAD_PATH: a blank head of our own for an outfit of our own (the outfit table points its
     # head row here). The game gives head slot 0 a skin material whatever the mesh carries, so the head
     # can only disappear by having no area; hiding it at runtime broke the wardrobe's dissolve transition.
-    head = os.environ.get("PBZ_BLANK_HEAD_PATH")
+    head = CTX["blank_head_path"]
     if head:
         folder, name = head.rsplit("/", 1)
         if not os.path.isfile(BLANK_HEAD_FBX):
@@ -200,10 +205,10 @@ def main():
             raise SystemExit("could not build the blank head %s" % head)
         EAL.save_directory(folder, only_if_is_dirty=False, recursive=True)
 
-    # PBZ_KEEP_DEFAULT_OUTFIT=1: the character is bound to another outfit (its carrier is not the shared head
+    # keep_default_outfit: the character is bound to another outfit (its carrier is not the shared head
     # part), so the default outfit must stay the game's own. Nothing is blanked, and blanks left in the
     # project by an earlier build are deleted - otherwise they would still be cooked and shipped.
-    if os.environ.get("PBZ_KEEP_DEFAULT_OUTFIT"):
+    if CTX["keep_default_outfit"]:
         removed = 0
         for folder, name in BLANKED:
             path = folder + "/" + name

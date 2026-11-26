@@ -9,13 +9,17 @@ Writes extract/ue-hunpreview-result.txt.
 """
 import json
 import os
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = load_context(__file__)["ref_root"]
 FBX = os.path.join(ROOT, "blender", "out", "Korinsna_Body.fbx").replace("\\", "/")
 DEST = "/Game/Korinsna/Source"
 NAME = "HunSkin"

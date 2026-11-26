@@ -3,13 +3,18 @@
 Writes extract/ue-retarget-verify.txt so the build can be sanity checked without opening the editor.
 """
 import os
+import sys
 
 import unreal
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
+
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 OUT = os.path.join(ROOT, "extract", "ue-retarget-verify.txt")
 
-ASSET_ROOT = os.environ.get("PBZ_ASSET_ROOT", "/Game/Korinsna").rstrip("/")
+ASSET_ROOT = CTX["asset_root"]
 RETARGETER = ASSET_ROOT + "/RTG_HunToKorinsna"
 ANIM_BP = ASSET_ROOT + "/ABP_Korinsna_Retarget"
 

@@ -10,13 +10,17 @@ game uses, so it doubles as a donor: import it, take its skeleton, rename that t
 and leave the mesh behind as the blank-part source.
 """
 import os
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = load_context(__file__)["ref_root"]
 RESULT = os.path.join(ROOT, "extract", "ue-hunskeleton-result.txt")
 
 GAME_DIR = "/HuaShira/Characters/Hero/Hero_Hun"

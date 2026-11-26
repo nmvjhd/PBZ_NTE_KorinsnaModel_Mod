@@ -12,13 +12,18 @@ breaks) and simply draws nothing.
 The same approach is used by the reference 2B mod (see its TECHNICAL-ANALYSIS.md, override family 2).
 """
 import os
+import sys
 
 import unreal
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from build_context import load_context
 
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 EAL = unreal.EditorAssetLibrary
 
-ROOT = os.environ.get("PBZ_REF_ROOT") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CTX = load_context(__file__)
+ROOT = CTX["ref_root"]
 RESULT = os.path.join(ROOT, "extract", "ue-blank-cloth-result.txt")
 
 CLOTH_DIR = "/HuaShira/Characters/Hero/Hero_Hun/SkinParts/Cloth"
@@ -47,8 +52,8 @@ def main():
         raise SystemExit(
             "ChaosClothAsset is not exposed - enable the ChaosClothAsset plugin in the uproject")
 
-    # PBZ_KEEP_DEFAULT_OUTFIT=1: see import_blank_parts.py - the default outfit's cloth stays the game's own
-    if os.environ.get("PBZ_KEEP_DEFAULT_OUTFIT"):
+    # keep_default_outfit: see import_blank_parts.py - the default outfit's cloth stays the game's own
+    if CTX["keep_default_outfit"]:
         # A Chaos Cloth asset cannot be deleted through the editor once it has been loaded (the same reason
         # the emptying below reports "could not clear" on a second run), so the package FILE is removed
         # without ever loading it; the cook runs in a fresh process and only sees what is on disk.
